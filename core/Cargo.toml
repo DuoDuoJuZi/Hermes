@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "modules/provider-api",
+    "modules/provider-memory",
+    "bridge"
+]
+
+[package]
+name = "core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+provider-api = { path = "modules/provider-api" }
+# 默认无法开启内存访问，只能通过 api 访问
+provider-memory = { path = "modules/provider-memory", optional = true }
+bridge = { path = "bridge" }
+tokio = { version = "1.50.0", features = ["full"] }
+
+[features]
+default = []
+memory-access = ["dep:provider-memory"]
