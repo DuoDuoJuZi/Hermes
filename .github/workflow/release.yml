@@ -1,0 +1,99 @@
+name: Build and Release Hermes
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-vscode:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup update stable
+
+      - name: Build Rust Core
+        working-directory: ./core
+        run: cargo build --release
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build and Package VS Code Extension
+        working-directory: ./plugins/vscode
+        shell: bash
+        run: |
+          mkdir -p bin
+          cp ../../core/target/release/core.exe ./bin/
+
+          # 安装依赖并打包为 .vsix 文件
+          npm ci
+          npx @vscode/vsce package
+
+      - name: Upload VS Code Extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hermes-VSCode
+          path: plugins/vscode/*.vsix
+
+  build-jetbrains:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup update stable
+
+      - name: Build Rust Core
+        working-directory: ./core
+        run: cargo build --release
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: gradle
+
+      - name: Build JetBrains Plugin
+        working-directory: ./plugins/jetbrains
+        shell: bash
+        run: |
+          mkdir -p bin
+          cp ../../core/target/release/core.exe ./bin/
+
+          ./gradlew buildPlugin
+
+      - name: Upload JetBrains Plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hermes-JetBrains
+          path: plugins/jetbrains/build/distributions/*.zip
+
+  publish-release:
+    needs: [build-vscode, build-jetbrains]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
