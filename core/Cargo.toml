@@ -17,6 +17,8 @@ provider-api = { path = "modules/provider-api" }
 provider-memory = { path = "modules/provider-memory", optional = true }
 bridge = { path = "bridge" }
 tokio = { version = "1.50.0", features = ["full"] }
+axum = { version = "0.8.8", features = ["ws"] }
+futures-util = "0.3.32"
 
 [features]
 default = []

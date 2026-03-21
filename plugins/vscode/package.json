@@ -1,0 +1,35 @@
+{
+  "name": "hermes-vscode",
+  "displayName": "Hermes-VSCode",
+  "description": "在状态栏实时显示正在播放的网易云音乐歌词",
+  "version": "0.1.0",
+  "publisher": "DuoDuoJuZi",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": []
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint"
+  },
+  "dependencies": {
+    "ws": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "18.x",
+    "@types/vscode": "^1.80.0",
+    "@types/ws": "^8.5.5",
+    "typescript": "^5.1.3"
+  }
+}

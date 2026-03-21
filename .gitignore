@@ -1,7 +1,20 @@
-/target/
+﻿/target/
 **/target/
 **/*.rs.bk
 *.pdb
+
+plugins/vscode/node_modules/
+plugins/vscode/out/
+plugins/vscode/dist/
+plugins/vscode/.vscode-test/
+plugins/vscode/*.vsix
+
+plugins/jetbrains/.gradle/
+plugins/jetbrains/build/
+plugins/jetbrains/out/
+
+plugins/jetbrains/bin/
+plugins/vscode/bin/
 
 .DS_Store
 .DS_Store?
@@ -10,7 +23,6 @@
 .Trashes
 ehthumbs.db
 Thumbs.db
-
 .idea/
 .vscode/
 *.swp

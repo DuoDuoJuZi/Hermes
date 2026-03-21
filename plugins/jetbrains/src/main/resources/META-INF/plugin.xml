@@ -1,0 +1,20 @@
+<!--
+  @Author: DuoDuoJuZi
+  @Date: 2026-03-21
+-->
+<idea-plugin>
+    <id>com.duoduojuzi.hermes</id>
+    <name>Hermes-JetBrains</name>
+    <vendor>DuoDuoJuZi</vendor>
+    <description><![CDATA[
+      Hermes Lyrics Sync for JetBrains IDEs. Syncs lyrics to your toolbar.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <statusBarWidgetFactory 
+            id="HermesLyricWidget" 
+            implementation="com.duoduojuzi.hermes.LyricWidgetFactory"/>
+    </extensions>
+</idea-plugin>

@@ -64,29 +64,29 @@ async fn fetch_and_parse_lrc(client: &reqwest::Client, song_id: &str) -> std::re
 }
 
 /**
- * 接收解析后的歌词数组并结合播放进度持续在控制台输出当前实时歌词
+ * 接收解析后的歌词数组并结合播放进度持续在流中广播当前实时歌词
  */
-async fn sync_lyrics_to_console(lyrics: Vec<LyricLine>, session: GlobalSystemMediaTransportControlsSession) {
+async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMediaTransportControlsSession, lyric_tx: tokio::sync::broadcast::Sender<String>) {
     let mut current_idx = usize::MAX;
-    let manual_offset_sec: f64 = 0.2; 
-    
+    let manual_offset_sec: f64 = 0.2;
+
     loop {
         let mut position = -1.0;
 
         if let Ok(timeline) = session.GetTimelineProperties() {
             if let (Ok(pos), Ok(last_updated)) = (timeline.Position(), timeline.LastUpdatedTime()) {
                 let mut pos_100ns = pos.Duration;
-                
+
                 if let Ok(playback_info) = session.GetPlaybackInfo() {
                     if let Ok(status) = playback_info.PlaybackStatus() {
                         if status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing {
                             if let Ok(now_sys) = SystemTime::now().duration_since(UNIX_EPOCH) {
                                 let now_100ns = (now_sys.as_secs() * 10_000_000) as i64 + (now_sys.subsec_nanos() / 100) as i64;
-                                let epoch_diff = 11644473600 * 10_000_000i64; 
+                                let epoch_diff = 11644473600 * 10_000_000i64;
                                 let current_universal_time = now_100ns + epoch_diff;
-                                
+
                                 let elapsed_100ns = current_universal_time - last_updated.UniversalTime;
-                                
+
                                 if elapsed_100ns > 0 {
                                     pos_100ns += elapsed_100ns;
                                 }
@@ -94,7 +94,7 @@ async fn sync_lyrics_to_console(lyrics: Vec<LyricLine>, session: GlobalSystemMed
                         }
                     }
                 }
-                
+
                 position = (pos_100ns as f64 / 10_000_000.0) + manual_offset_sec;
             }
         }
@@ -103,18 +103,18 @@ async fn sync_lyrics_to_console(lyrics: Vec<LyricLine>, session: GlobalSystemMed
             let target_idx = lyrics.partition_point(|line| line.time <= position).saturating_sub(1);
 
             if target_idx != current_idx && target_idx < lyrics.len() {
-                if !lyrics[target_idx].text.is_empty() {
-                    println!("{}", lyrics[target_idx].text);
+                let current_lyric = &lyrics[target_idx].text;
+                if !current_lyric.is_empty() {
+                    println!("{}", current_lyric);
+                    let _ = lyric_tx.send(current_lyric.clone());
                 }
                 current_idx = target_idx;
             }
         }
-        
+
         sleep(Duration::from_millis(20)).await;
     }
-}
-
-fn create_media_props_handler(tx: tokio::sync::mpsc::UnboundedSender<String>, handle: tokio::runtime::Handle) -> TypedEventHandler<GlobalSystemMediaTransportControlsSession, MediaPropertiesChangedEventArgs> {
+}fn create_media_props_handler(tx: tokio::sync::mpsc::UnboundedSender<String>, handle: tokio::runtime::Handle) -> TypedEventHandler<GlobalSystemMediaTransportControlsSession, MediaPropertiesChangedEventArgs> {
     TypedEventHandler::<GlobalSystemMediaTransportControlsSession, MediaPropertiesChangedEventArgs>::new(move |session_ref, _| {
         let tx_inner = tx.clone();
         if let Some(session) = session_ref.clone() {
@@ -143,7 +143,7 @@ fn create_media_props_handler(tx: tokio::sync::mpsc::UnboundedSender<String>, ha
 /**
  * 通过 Windows API 提供对媒体信息的访问并监听当前播放歌曲的变更
  */
-pub async fn listen_smtc_and_sync() -> std::result::Result<(), Box<dyn std::error::Error>> {
+pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<String>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
     println!("正在连接 SMTC");
@@ -218,8 +218,9 @@ pub async fn listen_smtc_and_sync() -> std::result::Result<(), Box<dyn std::erro
                 match fetch_and_parse_lrc(&client, &song_id).await {
                     Ok(lyrics) => {
                         println!("成功获取歌词，开始同步");
+                        let tx_clone = lyric_tx.clone();
                         current_task = Some(tokio::spawn(async move {
-                            sync_lyrics_to_console(lyrics, session).await;
+                            sync_lyrics_to_channel(lyrics, session, tx_clone).await;
                         }));
                     },
                     Err(e) => println!("获取歌词失败: {}", e)
