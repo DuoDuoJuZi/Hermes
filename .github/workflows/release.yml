@@ -65,6 +65,11 @@ jobs:
           distribution: "temurin"
           cache: gradle
 
+      - name: Setup Gradle 8.6
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.6"
+
       - name: Build JetBrains Plugin
         working-directory: ./plugins/jetbrains
         shell: bash
