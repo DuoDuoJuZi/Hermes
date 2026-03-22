@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @Author: DuoDuoJuZi
  * @Date: 2026-03-21
  */
@@ -68,7 +68,7 @@ async fn fetch_and_parse_lrc(client: &reqwest::Client, song_id: &str) -> std::re
  */
 async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMediaTransportControlsSession, lyric_tx: tokio::sync::broadcast::Sender<String>) {
     let mut current_idx = usize::MAX;
-    let manual_offset_sec: f64 = 0.2;
+    let manual_offset_sec: f64 = 0.0;
 
     loop {
         let mut position = -1.0;
@@ -143,7 +143,7 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
 /**
  * 通过 Windows API 提供对媒体信息的访问并监听当前播放歌曲的变更
  */
-pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<String>) -> std::result::Result<(), Box<dyn std::error::Error>> {
+pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<String>, song_tx: tokio::sync::broadcast::Sender<String>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
     println!("正在连接 SMTC");
@@ -209,6 +209,7 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
         if song_id != last_id {
             println!("提取到网易云歌曲 ID: {}", song_id);
             last_id = song_id.clone();
+            let _ = song_tx.send(song_id.clone());
             
             if let Some(task) = current_task.take() {
                 task.abort();

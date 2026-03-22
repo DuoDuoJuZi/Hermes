@@ -1,5 +1,4 @@
-// @Author: DuoDuoJuZi
-// @Date: 2026-03-21
+﻿/// 初始化基于 Windows 内存扫描的底层歌词追踪引擎并进入多级交互逻辑
 use std::io::{self, Write};
 use std::mem::size_of;
 use std::thread;
@@ -11,6 +10,7 @@ use winapi::um::winnt::{HANDLE, MEM_COMMIT, PAGE_READWRITE, PAGE_EXECUTE_READWRI
 use sysinfo::{PidExt, ProcessExt, System, SystemExt};
 use rayon::prelude::*; 
 
+/// 遍历系统进程并获取全部网易云音乐客户端的进程 ID 列表
 fn get_process_ids() -> Vec<u32> {
     let mut sys = System::new_all();
     sys.refresh_processes();
@@ -23,6 +23,7 @@ fn get_process_ids() -> Vec<u32> {
     pids
 }
 
+/// 获取指定进程的系统句柄以便在此基础上执行进程内存的数据读取
 fn open_process(pid: u32) -> Result<usize, String> {
     unsafe {
         let handle = OpenProcess(PROCESS_ALL_ACCESS | PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
@@ -34,6 +35,7 @@ fn open_process(pid: u32) -> Result<usize, String> {
     }
 }
 
+/// 从指定的进程内存地址处读取字节对并转换为 UTF-16 格式文字
 fn read_string_from_memory(process_handle: usize, address: usize, max_len: usize) -> Option<(String, Vec<u16>)> {
     let mut raw_bytes = vec![0u8; max_len];
     let mut bytes_read = 0;
@@ -61,6 +63,7 @@ fn read_string_from_memory(process_handle: usize, address: usize, max_len: usize
     Some((decoded, u16_chars))
 }
 
+/// 枚举并遍历目标进程相关的全部可用堆块扫描匹配对应字符串文本
 fn scan_memory_for_string(process_handle: usize, target: &str) -> Vec<usize> {
     let mut results = Vec::new();
     let mut current_address = 0usize;
@@ -117,9 +120,7 @@ fn scan_memory_for_string(process_handle: usize, target: &str) -> Vec<usize> {
     results
 }
 
-/**
- * 启动基于 Windows 内存扫描的歌词引擎
- */
+/// 初始化基于 Windows 内存扫描的底层歌词追踪引擎并进入多级交互逻辑
 pub fn fetch_memory_lyric() {
     let mut lyrics = Vec::new();
     println!("请输入接下来的 5 句歌词，每输入一句按下回车确认（快歌建议缩短截取关键字）");
@@ -268,3 +269,4 @@ pub fn fetch_memory_lyric() {
         thread::sleep(Duration::from_millis(20));
     }
 }
+
