@@ -18,7 +18,7 @@ dependencies {
 }
 
 intellij {
-    version.set("2023.2.5")
+    version.set("2025.3.3")
     type.set("IC")
     plugins.set(listOf())
 }
