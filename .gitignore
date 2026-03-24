@@ -2,6 +2,13 @@
 **/target/
 **/*.rs.bk
 *.pdb
+.pio/
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+*.d
 
 plugins/vscode/node_modules/
 plugins/vscode/out/
