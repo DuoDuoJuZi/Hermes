@@ -36,7 +36,7 @@ struct LyricLine {
  * 访问网易云音乐公共 API 获取对应的 LRC 文件并解析为时间轴格式数组返回
  */
 async fn fetch_and_parse_lrc(client: &reqwest::Client, song_id: &str) -> std::result::Result<Vec<LyricLine>, Box<dyn std::error::Error>> {
-    let url = format!("https://music.163.com/api/song/lyric?id={}&lv=1&kv=1&tv=-1", song_id);
+    let url = format!("http://127.0.0.1:10754/lyric?id={}&realIP=211.161.244.70", song_id);
     let resp = client.get(&url).send().await?.json::<LrcResponse>().await?;
     
     let mut lyrics = Vec::new();

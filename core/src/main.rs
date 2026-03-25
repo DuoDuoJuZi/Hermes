@@ -13,8 +13,11 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
+use std::time::Duration;
+use tokio::time::sleep;
 
 mod graphics;
+mod api_process;
 
 #[derive(Clone)]
 struct AppState {
@@ -24,6 +27,9 @@ struct AppState {
 /// 后台守护进程核心入口，初始化 WebSocket 服务与 SMTC 监听，建立多线程异步通信循环
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let api_process = api_process::NeteaseApiProcess::start().expect("拉起 Node 服务失败，请检查是否已安装 Node.js");
+    sleep(Duration::from_secs(2)).await;
+
     let (lyric_tx, _) = broadcast::channel::<String>(100);
     let (song_tx, _) = broadcast::channel::<String>(100);
     let mut song_rx = song_tx.subscribe();
@@ -117,7 +123,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     });
 
     tokio::signal::ctrl_c().await.unwrap();
-    Ok(())
+
+    drop(api_process); 
+
+    std::process::exit(0); 
 }
 
 /// 接受并拦截 HTTP 路由请求，将其升级为 WebSocket 连接，传递应用共享状态
