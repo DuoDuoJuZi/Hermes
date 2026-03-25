@@ -94,7 +94,9 @@ uint8_t UserRxBufferFS[APP_RX_DATA_SIZE];
 uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 
 /* USER CODE BEGIN PRIVATE_VARIABLES */
-
+char lyric_buffer[512];
+volatile uint16_t lyric_idx = 0;
+volatile uint8_t lyric_ready = 0;
 /* USER CODE END PRIVATE_VARIABLES */
 
 /**
@@ -261,6 +263,20 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
+  for (uint32_t i = 0; i < *Len; i++) {
+      char c = Buf[i];
+      
+      if (c == '\n') {
+          lyric_buffer[lyric_idx] = '\0';
+          lyric_ready = 1;            
+      }
+      else if (c != '\r' && lyric_idx < (sizeof(lyric_buffer) - 1)) {
+          if (lyric_ready == 0) {
+              lyric_buffer[lyric_idx++] = c;
+          }
+      }
+  }
+
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
   return (USBD_OK);

@@ -57,6 +57,51 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             graphics::render_text_to_console(&lyric);
         }
     });
+let mut serial_lyric_rx = lyric_tx.subscribe();
+    tokio::spawn(async move {
+        let port_name = "COM5";
+        let baud_rate = 115200;
+
+        println!("正在尝试连接 ({})...", port_name);
+        
+        let mut port = match serialport::new(port_name, baud_rate)
+            .timeout(std::time::Duration::from_millis(10)) 
+            .open() 
+        {
+            Ok(p) => {
+                println!("硬件连接成功");
+                p
+            },
+            Err(e) => {
+                eprintln!("串口打开失败: {}", e);
+                return;
+            }
+        };
+
+        let mut port_rx = port.try_clone().expect("无法克隆串口句柄");
+        std::thread::spawn(move || {
+            let mut serial_buf: Vec<u8> = vec![0; 1000];
+            loop {
+                match port_rx.read(serial_buf.as_mut_slice()) {
+                    Ok(t) if t > 0 => {
+                        let received = String::from_utf8_lossy(&serial_buf[..t]);
+                        print!("{}", received);
+                    },
+                    _ => {}
+                }
+            }
+        });
+
+        while let Ok(lyric) = serial_lyric_rx.recv().await {
+            let clean_lyric = lyric.trim();
+            if clean_lyric.is_empty() { continue; }
+            
+            let msg = format!("{}\r\n", clean_lyric);
+            if let Err(e) = port.write_all(msg.as_bytes()) {
+                eprintln!("发送歌词失败: {}", e);
+            }
+        }
+    });
 
     let app = Router::new()
         .route("/ws", get(ws_handler))

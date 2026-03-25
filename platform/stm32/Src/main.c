@@ -17,6 +17,8 @@
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
+#include <stdio.h>
+#include <string.h>
 #include "main.h"
 #include "usb_device.h"
 #include "usbd_cdc_if.h"
@@ -44,7 +46,9 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+extern char lyric_buffer[512];
+extern volatile uint16_t lyric_idx;
+extern volatile uint8_t lyric_ready;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -97,9 +101,15 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    uint8_t buffer[] = "Hello World\r\n";
-    CDC_Transmit_FS(buffer, sizeof(buffer)-1);
-    HAL_Delay(1000);
+    if (lyric_ready == 1) {
+          
+          char debug_msg[600];
+          uint16_t len = snprintf(debug_msg, sizeof(debug_msg), "硬件已接收 %s\r\n", lyric_buffer);
+          
+          CDC_Transmit_FS((uint8_t*)debug_msg, len);
+          lyric_idx = 0;
+          lyric_ready = 0;
+    }
     /* USER CODE END WHILE */
     /* USER CODE BEGIN 3 */
   }
