@@ -18,6 +18,7 @@ use tokio::time::sleep;
 
 mod graphics;
 mod api_process;
+mod protocol;
 
 #[derive(Clone)]
 struct AppState {
@@ -57,19 +58,22 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             graphics::render_text_to_console(&lyric);
         }
     });
-let mut serial_lyric_rx = lyric_tx.subscribe();
-    tokio::spawn(async move {
+
+    let (serial_tx, mut serial_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
+    std::thread::spawn(move || {
         let port_name = "COM5";
-        let baud_rate = 115200;
+        let baud_rate = 115200; 
 
         println!("正在尝试连接 ({})...", port_name);
-        
         let mut port = match serialport::new(port_name, baud_rate)
-            .timeout(std::time::Duration::from_millis(10)) 
+            .timeout(std::time::Duration::from_millis(100)) 
             .open() 
         {
-            Ok(p) => {
+            Ok(mut p) => {
                 println!("硬件连接成功");
+                let _ = p.write_data_terminal_ready(true);
+                let _ = p.write_request_to_send(true);
                 p
             },
             Err(e) => {
@@ -78,27 +82,45 @@ let mut serial_lyric_rx = lyric_tx.subscribe();
             }
         };
 
-        let mut port_rx = port.try_clone().expect("无法克隆串口句柄");
-        std::thread::spawn(move || {
-            let mut serial_buf: Vec<u8> = vec![0; 1000];
-            loop {
-                match port_rx.read(serial_buf.as_mut_slice()) {
-                    Ok(t) if t > 0 => {
-                        let received = String::from_utf8_lossy(&serial_buf[..t]);
-                        print!("{}", received);
-                    },
-                    _ => {}
-                }
+        while let Some(packet) = serial_rx.blocking_recv() {
+            println!("准备向单片机发送包裹，大小: {} bytes", packet.len());
+            if let Err(e) = port.write_all(&packet) {
+                eprintln!("串口发送失败: {}", e);
             }
-        });
+        }
+    });
 
+    let serial_tx_for_lyric = serial_tx.clone();
+    let mut serial_lyric_rx = lyric_tx.subscribe();
+    
+    tokio::spawn(async move {
         while let Ok(lyric) = serial_lyric_rx.recv().await {
             let clean_lyric = lyric.trim();
             if clean_lyric.is_empty() { continue; }
             
-            let msg = format!("{}\r\n", clean_lyric);
-            if let Err(e) = port.write_all(msg.as_bytes()) {
-                eprintln!("发送歌词失败: {}", e);
+            if let Some(matrix) = graphics::generate_text_matrix(clean_lyric) {
+                let packet = protocol::pack_text_matrix(&matrix);
+                let _ = serial_tx_for_lyric.send(packet);
+            }
+        }
+    });
+
+    let serial_tx_for_cover = serial_tx.clone();
+    let mut song_rx_for_cover = song_tx.subscribe();
+    
+    tokio::spawn(async move {
+        while let Ok(song_id) = song_rx_for_cover.recv().await {
+            let url = format!("https://music.163.com/api/song/detail/?id={}&ids=[{}]", song_id, song_id);
+            if let Ok(resp) = reqwest::get(&url).await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if let Some(pic) = json["songs"][0]["album"]["picUrl"].as_str() {
+                        if let Ok(matrix) = graphics::fetch_cover_matrix(pic).await {
+                            graphics::print_cover_to_console(&matrix);
+                            let packet = protocol::pack_cover_matrix(&matrix);
+                            let _ = serial_tx_for_cover.send(packet);
+                        }
+                    }
+                }
             }
         }
     });
