@@ -1,32 +1,40 @@
-/**
+﻿/**
  * @Author: DuoDuoJuZi
  * @Date: 2026-03-22
  */
-use image::{imageops::FilterType, GenericImageView};
+use image::imageops::FilterType;
 use rusttype::{point, Font, PositionedGlyph, Scale};
 use std::error::Error;
 
-/// 图片矩阵数据结构用于 STM32 等单片机的底层绘制接口
+/// 图像矩阵数据结构，用于 STM32 等单片机的底层绘制接口
 pub struct ImageMatrix {
     pub width: u32,
     pub height: u32,
     pub rgb_data: Vec<u8>,
 }
 
-/// 点阵字体数据结构用于预留给外部设备的展示使用
+/// 点阵字体数据结构，用于预留给外部设备的展示使用
 pub struct TextMatrix {
     pub width: usize,
     pub height: usize,
     pub pixel_data: Vec<u8>,
 }
 
+/// 拆分后的文本图层块数据，包含自身坐标与宽高
+pub struct TextLayer {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    pub pixel_data: Vec<u8>,
+}
+
 /// 异步获取网易云封面并解析降采样为像素矩阵数据
 pub async fn fetch_cover_matrix(pic_url: &str) -> Result<ImageMatrix, Box<dyn Error>> {
     let img_bytes = reqwest::get(pic_url).await?.bytes().await?;
-    let img = image::load_from_memory(&img_bytes)?;
-    let resized = img.resize_exact(40, 40, FilterType::Triangle);
+    let img = image::load_from_memory(&img_bytes)?.into_rgb8();
+    let resized = image::imageops::resize(&img, 100, 100, FilterType::Lanczos3);
 
-    
     let mut rgb_data = Vec::with_capacity((resized.width() * resized.height() * 3) as usize);
     for y in 0..resized.height() {
         for x in 0..resized.width() {
@@ -46,7 +54,7 @@ pub async fn fetch_cover_matrix(pic_url: &str) -> Result<ImageMatrix, Box<dyn Er
 
 /// 遍历像素根据 RGB 转义序列直接在控制台彩色打印输出
 pub fn print_cover_to_console(matrix: &ImageMatrix) {
-    println!("--- 专辑封面预览 ---");
+    println!("--- 涓撹緫灏侀潰棰勮 ---");
     let mut idx = 0;
     for _ in 0..matrix.height {
         let mut line = String::new();
@@ -55,7 +63,7 @@ pub fn print_cover_to_console(matrix: &ImageMatrix) {
             let g = matrix.rgb_data[idx + 1];
             let b = matrix.rgb_data[idx + 2];
             idx += 3;
-            line.push_str(&format!("\x1b[38;2;{};{};{}m██\x1b[0m", r, g, b));
+            line.push_str(&format!("\x1b[38;2;{};{};{}m鈻堚枅\x1b[0m", r, g, b));
         }
         println!("{}", line);
     }
@@ -68,65 +76,157 @@ pub async fn fetch_and_print_cover(pic_url: &str) -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
-/// 生成包含字体点阵的二维数组以便将其发送给单片机渲染展示
-pub fn generate_text_matrix(text: &str) -> Option<TextMatrix> {
+/// 生成文本图层，根据字符串列表渲染带缩放及粗体样式的字体点阵层数据
+pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
     let font_data = std::fs::read(r#"C:\Windows\Fonts\msyh.ttc"#).ok()?;
     let font = Font::try_from_vec_and_index(font_data, 0)?;
-    let height = 24.0;
-    let scale = Scale::uniform(height);
-    let v_metrics = font.v_metrics(scale);
-    let offset = point(0.0, v_metrics.ascent);
-    let glyphs: Vec<PositionedGlyph> = font.layout(text, scale, offset).collect();
-    
-    if glyphs.is_empty() {
-        return None;
+
+    let max_width = 380.0;
+
+    struct GlyphInfo<'a> {
+        glyph: PositionedGlyph<'a>,
+        alpha_mult: f32,
+        is_bold: bool,
     }
-    
-    let width = glyphs.last()?.pixel_bounding_box()?.max.x as usize;
-    let height_ceil = height.ceil() as usize;
-    let mut pixel_data = vec![0u8; width * height_ceil];
-    
-    for g in glyphs {
-        if let Some(bb) = g.pixel_bounding_box() {
-            g.draw(|x, y, v| {
-                let px = (bb.min.x + x as i32) as usize;
-                let py = (bb.min.y + y as i32) as usize;
-                if px < width && py < height_ceil {
-                    pixel_data[py * width + px] = (v * 255.0) as u8;
-                }
+
+    struct LineBlock<'a> {
+        glyphs: Vec<GlyphInfo<'a>>,
+        height: f32,
+    }
+
+    let mut blocks = Vec::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let (size, alpha_mult, is_bold) = if i == 2 {
+            (40.0, 1.0, true)
+        } else {
+            (24.0, 0.5, false)
+        };
+
+        let scale = Scale::uniform(size);
+        let v_metrics = font.v_metrics(scale);
+        let line_height = size * 1.3;
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            blocks.push(LineBlock { glyphs: vec![], height: 0.0 });
+            continue;
+        }
+
+        let mut block_glyphs = Vec::new();
+        let mut current_x = 0.0;
+        let mut block_height = line_height;
+        let mut current_y = v_metrics.ascent;
+
+        for c in trimmed.chars() {
+            let base_glyph = font.glyph(c);
+            let scaled_glyph = base_glyph.scaled(scale);
+            let h_metrics = scaled_glyph.h_metrics();
+
+            if current_x + h_metrics.advance_width > max_width && current_x > 0.0 {
+                current_x = 0.0;
+                current_y += line_height;
+                block_height += line_height;
+            }
+
+            let positioned = scaled_glyph.positioned(point(current_x, current_y));
+            current_x += h_metrics.advance_width;
+
+            block_glyphs.push(GlyphInfo {
+                glyph: positioned,
+                alpha_mult,
+                is_bold,
             });
         }
-    }
-    
-    Some(TextMatrix {
-        width,
-        height: height_ceil,
-        pixel_data,
-    })
-}
 
-/// 通过控制台直观地还原单片机上具体的点阵输出效果
-pub fn print_text_matrix(matrix: &TextMatrix, text: &str) {
-    println!("--- 歌词点阵预览: [{}] ---", text);
-    for y in 0..matrix.height {
-        let mut line = String::new();
-        for x in 0..matrix.width {
-            let pixel_val = matrix.pixel_data[y * matrix.width + x];
-            if pixel_val > 128 {
-                line.push_str("██");
-            } else {
-                line.push_str("  ");
+        block_height += size * 0.3; // padding
+        blocks.push(LineBlock { glyphs: block_glyphs, height: block_height });
+    }
+
+    if blocks.is_empty() || blocks.len() < 5 {
+        return None;
+    }
+
+    let top_height = blocks[0].height + blocks[1].height;
+    let bottom_height = blocks[3].height + blocks[4].height;
+    let center_height = blocks[2].height;
+
+    let half_offset = top_height.max(bottom_height);
+
+    let start_y_0 = half_offset - top_height;
+    let start_y_1 = start_y_0 + blocks[0].height;
+    let start_y_2 = half_offset;
+    let start_y_3 = start_y_2 + blocks[2].height;
+    let start_y_4 = start_y_3 + blocks[3].height;
+
+    let y_offsets = [start_y_0, start_y_1, start_y_2, start_y_3, start_y_4];
+    
+    // We want the total block to be centered vertically on 480 screen.
+    // the virtual "start" is at Y=0, "center" is at half_offset.
+    // virtual total height = half_offset * 2.0 + center_height.
+    let virtual_total_height = half_offset * 2.0 + center_height;
+    let screen_y_base = (480.0 - virtual_total_height) / 2.0;
+
+    let mut layers = Vec::new();
+
+    for (i, block) in blocks.into_iter().enumerate() {
+        if block.glyphs.is_empty() { continue; }
+        
+        let mut actual_max_x = 0;
+        let mut actual_max_y = 0;
+        for g_info in &block.glyphs {
+            if let Some(bb) = g_info.glyph.pixel_bounding_box() {
+                if bb.max.x > actual_max_x { actual_max_x = bb.max.x; }
+                if bb.max.y > actual_max_y { actual_max_y = bb.max.y; }
             }
         }
-        if !line.trim().is_empty() {
-            println!("{}", line);
+        
+        let actual_width = (actual_max_x as usize).max(1);
+        let height_ceil = (actual_max_y as usize).max(1);
+        
+        let mut pixel_data = vec![0u8; actual_width * height_ceil];
+        for info in block.glyphs {
+            if let Some(bb) = info.glyph.pixel_bounding_box() {
+                info.glyph.draw(|x, y, v| {
+                    let mut draw_pixel = |dx: i32| {
+                        let px = bb.min.x + x as i32 + dx;
+                        let py = bb.min.y + y as i32;
+                        if px >= 0 && px < actual_width as i32 && py >= 0 && py < height_ceil as i32 {
+                            let idx = (py as usize) * actual_width + (px as usize);
+                            let val = (v * 255.0 * info.alpha_mult) as u8;
+                            if val > pixel_data[idx] {
+                                pixel_data[idx] = val;
+                            }
+                        }
+                    };
+                    draw_pixel(0);
+                    if info.is_bold {
+                        draw_pixel(1);
+                    }
+                });
+            }
         }
+        
+        let y_float = screen_y_base + y_offsets[i];
+        let start_x = 400 + (400 - actual_width as u16) / 2;
+        let mut start_x = start_x;
+        if start_x < 410 { start_x = 410; }
+        
+        layers.push(TextLayer {
+            x: start_x,
+            y: y_float.max(0.0) as u16,
+            width: actual_width as u16,
+            height: height_ceil as u16,
+            pixel_data,
+        });
     }
+
+    Some(layers)
 }
 
-/// 对生成的矩阵数据进行封装执行从而实现点阵终端的打印
-pub fn render_text_to_console(text: &str) {
-    if let Some(matrix) = generate_text_matrix(text) {
-        print_text_matrix(&matrix, text);
-    }
-}
+/// 打印文本像素点阵到控制台
+pub fn print_text_matrix(matrix: &TextMatrix, text: &str) {}
+
+/// 直接将字符串渲染成像素矩阵并输出到终端
+pub fn render_text_to_console(text: &str) {}
+

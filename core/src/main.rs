@@ -20,6 +20,7 @@ mod graphics;
 mod api_process;
 mod protocol;
 
+/// 维护全局异步共享的应用程序状态
 #[derive(Clone)]
 struct AppState {
     lyric_tx: broadcast::Sender<String>,
@@ -67,8 +68,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
         println!("正在尝试连接 ({})...", port_name);
         let mut port = match serialport::new(port_name, baud_rate)
-            .timeout(std::time::Duration::from_millis(100)) 
-            .open() 
+            .timeout(std::time::Duration::from_millis(5000))
+            .open()
         {
             Ok(mut p) => {
                 println!("硬件连接成功");
@@ -95,17 +96,27 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     
     tokio::spawn(async move {
         while let Ok(lyric) = serial_lyric_rx.recv().await {
-            let clean_lyric = lyric.trim();
-            if clean_lyric.is_empty() { continue; }
-            
-            if let Some(matrix) = graphics::generate_text_matrix(clean_lyric) {
-                let packet = protocol::pack_text_matrix(&matrix);
-                let _ = serial_tx_for_lyric.send(packet);
+            let lines: Vec<String> = if let Ok(parsed) = serde_json::from_str(lyric.trim()) {
+                parsed
+            } else {
+                vec![String::new(), String::new(), lyric.trim().to_string(), String::new(), String::new()]
+            };
+
+            if lines.iter().all(|l| l.trim().is_empty()) { continue; }
+
+            if let Some(layers) = graphics::generate_text_layers(&lines) {
+                // Clear the whole right section first
+                let clear_packet = protocol::pack_clear_rect(400, 0, 400, 480);
+                let _ = serial_tx_for_lyric.send(clear_packet);
+                
+                // Keep some delay interval? In blocking queue it's pushed serially anyway.
+                for layer in layers {
+                    let packet = protocol::pack_text_layer(&layer);
+                    let _ = serial_tx_for_lyric.send(packet);
+                }
             }
         }
-    });
-
-    let serial_tx_for_cover = serial_tx.clone();
+    });    let serial_tx_for_cover = serial_tx.clone();
     let mut song_rx_for_cover = song_tx.subscribe();
     
     tokio::spawn(async move {
@@ -209,7 +220,17 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let mut rx = state.lyric_tx.subscribe();
 
     while let Ok(lyric) = rx.recv().await {
-        if socket.send(Message::Text(lyric.into())).await.is_err() {
+        let text_to_send = if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&lyric) {
+            if parsed.len() == 5 {
+                parsed[2].clone()
+            } else {
+                lyric.clone()
+            }
+        } else {
+            lyric.clone()
+        };
+        
+        if socket.send(Message::Text(text_to_send.into())).await.is_err() {
             break;
         }
     }

@@ -4,11 +4,13 @@
  */
 use std::process::{Child, Command};
 
+/// 负责管理后台网易云 Node.js API 服务的生命周期
 pub struct NeteaseApiProcess {
     child: Child,
 }
 
 impl NeteaseApiProcess {
+    /// 启动后台服务并返回被管理的进程实例
     pub fn start() -> Result<Self, Box<dyn std::error::Error>> {
         println!("正在后台拉起 Node.js API 服务...");
         let child = Command::new("node")

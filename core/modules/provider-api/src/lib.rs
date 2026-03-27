@@ -105,8 +105,19 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
             if target_idx != current_idx && target_idx < lyrics.len() {
                 let current_lyric = &lyrics[target_idx].text;
                 if !current_lyric.is_empty() {
+                    let mut lines = Vec::new();
+                    // 前两句
+                    if target_idx >= 2 { lines.push(lyrics[target_idx - 2].text.clone()); } else { lines.push(String::new()); }
+                    if target_idx >= 1 { lines.push(lyrics[target_idx - 1].text.clone()); } else { lines.push(String::new()); }
+                    // 当前句
+                    lines.push(current_lyric.clone());
+                    // 后两句
+                    if target_idx + 1 < lyrics.len() { lines.push(lyrics[target_idx + 1].text.clone()); } else { lines.push(String::new()); }
+                    if target_idx + 2 < lyrics.len() { lines.push(lyrics[target_idx + 2].text.clone()); } else { lines.push(String::new()); }
+                    
+                    let json_str = serde_json::to_string(&lines).unwrap_or_default();
                     println!("{}", current_lyric);
-                    let _ = lyric_tx.send(current_lyric.clone());
+                    let _ = lyric_tx.send(json_str);
                 }
                 current_idx = target_idx;
             }
