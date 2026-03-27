@@ -31,6 +31,11 @@
 #include "protocol_parser.h"
 #include "usb_device.h"
 
+#define UART_RX_BUF_SIZE 16384
+uint8_t uart_rx_buf[UART_RX_BUF_SIZE];
+volatile uint32_t uart_rx_head = 0;
+volatile uint32_t uart_rx_tail = 0;
+
 uint8_t rx_data;
 extern UART_HandleTypeDef huart1;
 /********************************************** 函数声明 *******************************************/
@@ -65,7 +70,13 @@ int main(void)
   LCD_Clear();
 
 	while (1)
-	{
+        {
+                while (uart_rx_tail != uart_rx_head)
+                {
+                        uint8_t byte = uart_rx_buf[uart_rx_tail];
+                        uart_rx_tail = (uart_rx_tail + 1) % UART_RX_BUF_SIZE;
+                        Protocol_ParseByte(byte);
+                }
 		
 // #if LCD_NUM_LAYERS == 2				// 如果定义了双层，则开启双层显示测试
 		
@@ -239,7 +250,13 @@ void Error_Handler(void)
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
-  {
+        {
+                while (uart_rx_tail != uart_rx_head)
+                {
+                        uint8_t byte = uart_rx_buf[uart_rx_tail];
+                        uart_rx_tail = (uart_rx_tail + 1) % UART_RX_BUF_SIZE;
+                        Protocol_ParseByte(byte);
+                }
   }
   /* USER CODE END Error_Handler_Debug */
 }
@@ -250,7 +267,8 @@ void Error_Handler(void)
  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1) {
-        Protocol_ParseByte(rx_data);
+        uart_rx_buf[uart_rx_head] = rx_data;
+        uart_rx_head = (uart_rx_head + 1) % UART_RX_BUF_SIZE;
         HAL_UART_Receive_IT(&huart1, &rx_data, 1);
     }
 }

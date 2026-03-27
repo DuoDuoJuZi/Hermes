@@ -55,8 +55,11 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
 		HAL_GPIO_Init(USART1_TX_PORT, &GPIO_InitStruct);
 
 		GPIO_InitStruct.Pin 			= USART1_RX_PIN;					// RXÒý½Å
-		HAL_GPIO_Init(USART1_RX_PORT, &GPIO_InitStruct);		
-	}
+		HAL_GPIO_Init(USART1_RX_PORT, &GPIO_InitStruct);
+
+                HAL_NVIC_SetPriority(USART1_IRQn, 0, 0);
+                HAL_NVIC_EnableIRQ(USART1_IRQn);
+        }
 
 }
 
