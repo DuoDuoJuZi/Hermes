@@ -1,13 +1,13 @@
 /**
  * @Author: DuoDuoJuZi
  * @Date: 2026-03-27
- * @brief 串口数据协议解析源代码，负责解析接收到的指令并驱动 LCD 进行绘制。
+ * @brief 串口数据协议解析源代码，负责解析接收到的指令并驱动 LCD 进行绘制
  */
 #include "protocol_parser.h"
 #include "lcd_rgb.h"
 
 /**
- * @brief 安全绘制带有正确颜色模式转换的点用于封面图层。
+ * @brief 安全绘制带有正确颜色模式转换的点用于封面图层
  * @param x 水平坐标
  * @param y 垂直坐标
  * @param r 红色分量
@@ -27,7 +27,7 @@ static void Safe_DrawPoint_Layer0(uint16_t x, uint16_t y, uint8_t r, uint8_t g, 
 }
 
 /**
- * @brief 安全绘制带有正确颜色模式转换的点用于歌词图层。
+ * @brief 安全绘制带有正确颜色模式转换的点用于歌词图层
  * @param x 水平坐标
  * @param y 垂直坐标
  * @param r 红色分量
@@ -74,22 +74,35 @@ ProtocolParser parser;
 #define RX_PAYLOAD_BUF_SIZE 150000
 uint8_t *const rx_payload_buffer = (uint8_t *)0x24000000;
 
+static uint32_t global_theme_bg = 0xFF000000;
+
+
 /**
- * @brief 绘制全彩封面图像。
+ * @brief 绘制全彩封面图像
  * @param data 图像像素及宽高数据
  * @param length 数据总长度
  */
 void Draw_Cover(uint8_t *data, uint32_t length) {
     uint16_t width = data[0] | (data[1] << 8);
     uint16_t height = data[2] | (data[3] << 8);
-    uint32_t data_idx = 4;
+    uint8_t theme_r = data[4];
+    uint8_t theme_g = data[5];
+    uint8_t theme_b = data[6];
+    uint32_t data_idx = 7;
     int16_t start_x = (300 - (int16_t)width) / 2;
     if (start_x < 0) start_x = 0;
     int16_t start_y = (480 - (int16_t)height) / 2 - 40;
     if (start_y < 0) start_y = 0;
 
-    LCD_SetColor(0xFF000000);
-    LCD_FillRect(0, 0, 300, 480);
+    global_theme_bg = (0xFF << 24) | (theme_r << 16) | (theme_g << 8) | theme_b;
+
+    LCD_SetLayer(1);
+    LCD_SetColor(0x00000000);
+    LCD_FillRect(0, 0, 800, 480);
+
+    LCD_SetLayer(0);
+    LCD_SetColor(global_theme_bg);
+    LCD_FillRect(0, 0, 800, 480);
 
     for (uint16_t y = 0; y < height; y++) {
         for (uint16_t x = 0; x < width; x++) {
@@ -107,7 +120,7 @@ void Draw_Cover(uint8_t *data, uint32_t length) {
 }
 
 /**
- * @brief 绘制灰度歌词文本。
+ * @brief 绘制灰度歌词文本
  * @param data 文本点阵灰度像素及宽高数据
  * @param length 数据总长度
  */
@@ -120,9 +133,9 @@ void Draw_TextGrayscale(uint8_t *data, uint32_t length) {
     if (start_x < 310) start_x = 310;
     int16_t start_y = (480 - (int16_t)height) / 2;
     if (start_y < 0) start_y = 0;
-    uint32_t bg_color = 0xFF000000;
 
-    LCD_SetColor(bg_color);
+    LCD_SetLayer(1);
+    LCD_SetColor(0x00000000);
     LCD_FillRect(300, 0, 500, 480);
 
     for (uint16_t y = 0; y < height; y++) {
@@ -140,7 +153,7 @@ void Draw_TextGrayscale(uint8_t *data, uint32_t length) {
 }
 
 /**
- * @brief 初始化协议解析状态机。
+ * @brief 初始化协议解析状态机
  */
 void Protocol_Init(void) {
     parser.state = STATE_HEAD1;
@@ -148,7 +161,7 @@ void Protocol_Init(void) {
 }
 
 /**
- * @brief 解析单个字节并驱动状态机运转。
+ * @brief 解析单个字节并驱动状态机运转
  * @param byte 接收到的单个字节数据
  */
 void Protocol_ParseByte(uint8_t byte) {
@@ -202,11 +215,12 @@ void Protocol_ParseByte(uint8_t byte) {
                     uint16_t y = parser.payload_buf[2] | (parser.payload_buf[3] << 8);
                     uint16_t w = parser.payload_buf[4] | (parser.payload_buf[5] << 8);
                     uint16_t h = parser.payload_buf[6] | (parser.payload_buf[7] << 8);
-                    LCD_SetColor(0xFF000000);
+                    LCD_SetLayer(1);
+                    LCD_SetColor(0x00000000);
                     LCD_FillRect(x, y, w, h);
                 } else if (parser.type == 0x04) {
-                    uint16_t x_off = parser.payload_buf[0] | (parser.payload_buf[1] << 8);
-                    uint16_t y_off = parser.payload_buf[2] | (parser.payload_buf[3] << 8);
+                    int16_t x_off = (int16_t)(parser.payload_buf[0] | (parser.payload_buf[1] << 8));
+                    int16_t y_off = (int16_t)(parser.payload_buf[2] | (parser.payload_buf[3] << 8));
                     uint16_t w = parser.payload_buf[4] | (parser.payload_buf[5] << 8);
                     uint16_t h = parser.payload_buf[6] | (parser.payload_buf[7] << 8);
                     uint8_t is_active = parser.payload_buf[8];
@@ -217,15 +231,21 @@ void Protocol_ParseByte(uint8_t byte) {
                     uint8_t base_g = (base_color >> 8) & 0xFF;
                     uint8_t base_b = base_color & 0xFF;
 
+                    uint8_t bg_r = (global_theme_bg >> 16) & 0xFF;
+                    uint8_t bg_g = (global_theme_bg >> 8) & 0xFF;
+                    uint8_t bg_b = global_theme_bg & 0xFF;
+
+                    LCD_SetLayer(1);
+
                     for (uint16_t y = 0; y < h; y++) {
                         for (uint16_t x = 0; x < w; x++) {
                             if (data_idx < parser.len) {
                                 uint8_t alpha = parser.payload_buf[data_idx++];
                                 if (alpha > 10) {
-                                    if (x_off + x < 800 && y_off + y < 480) {
-                                        uint8_t r = (base_r * alpha) / 255;
-                                        uint8_t g = (base_g * alpha) / 255;
-                                        uint8_t b = (base_b * alpha) / 255;
+                                    if (x_off + (int16_t)x >= 0 && x_off + (int16_t)x < 800 && y_off + (int16_t)y >= 0 && y_off + (int16_t)y < 480) {
+                                        uint8_t r = (base_r * alpha + bg_r * (255 - alpha)) / 255;
+                                        uint8_t g = (base_g * alpha + bg_g * (255 - alpha)) / 255;
+                                        uint8_t b = (base_b * alpha + bg_b * (255 - alpha)) / 255;
                                         Safe_DrawPoint_Layer1(x_off + x, y_off + y, r, g, b);
                                     }
                                 }

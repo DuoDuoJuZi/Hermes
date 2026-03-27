@@ -10,6 +10,7 @@ use std::error::Error;
 pub struct ImageMatrix {
     pub width: u32,
     pub height: u32,
+    pub theme_color: (u8, u8, u8),
     pub rgb_data: Vec<u8>,
 }
 
@@ -22,8 +23,8 @@ pub struct TextMatrix {
 
 /// 拆分后的文本图层块数据，包含自身坐标与宽高
 pub struct TextLayer {
-    pub x: u16,
-    pub y: u16,
+    pub x: i16,
+    pub y: i16,
     pub width: u16,
     pub height: u16,
     pub is_active: u8,
@@ -45,10 +46,50 @@ pub async fn fetch_cover_matrix(pic_url: &str) -> Result<ImageMatrix, Box<dyn Er
             rgb_data.push(pixel[2]);
         }
     }
-    
+
+    let mut bins = std::collections::HashMap::new();
+    let mut max_count = 0;
+    let mut dominant_center = (0, 0, 0);
+
+    for i in (0..rgb_data.len()).step_by(3) {
+        let r = rgb_data[i];
+        let g = rgb_data[i+1];
+        let b = rgb_data[i+2];
+
+        let r_bin = (r >> 3) as u16;
+        let g_bin = (g >> 3) as u16;
+        let b_bin = (b >> 3) as u16;
+
+        let key = (r_bin << 10) | (g_bin << 5) | b_bin;
+        
+        let entry = bins.entry(key).or_insert((0, 0, 0, 0));
+        entry.0 += 1;
+        entry.1 += r as u32;
+        entry.2 += g as u32;
+        entry.3 += b as u32;
+
+        if entry.0 > max_count {
+            max_count = entry.0;
+            dominant_center = (
+                (entry.1 / entry.0) as u8,
+                (entry.2 / entry.0) as u8,
+                (entry.3 / entry.0) as u8
+            );
+        }
+    }
+
+    let luma = 0.299 * (dominant_center.0 as f32) + 0.587 * (dominant_center.1 as f32) + 0.114 * (dominant_center.2 as f32);
+    if luma > 80.0 {
+        let scale = 80.0 / luma;
+        dominant_center.0 = (dominant_center.0 as f32 * scale) as u8;
+        dominant_center.1 = (dominant_center.1 as f32 * scale) as u8;
+        dominant_center.2 = (dominant_center.2 as f32 * scale) as u8;
+    }
+
     Ok(ImageMatrix {
         width: resized.width(),
         height: resized.height(),
+        theme_color: dominant_center,
         rgb_data,
     })
 }
@@ -88,9 +129,9 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
 
     for (i, line) in lines.iter().enumerate() {
         let (size, alpha_mult, is_bold, is_active) = if i == 3 {
-            (46.0, 1.0, true, 1u8) // active
+            (40.0, 1.0, true, 1u8)
         } else {
-            (32.0, 1.0, true, 0u8) // inactive
+            (26.0, 1.0, true, 0u8)
         };
 
         let scale = Scale::uniform(size);
@@ -129,7 +170,7 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
             });
         }
 
-        block_height += size * 0.3; // padding
+        block_height += size * 0.3;
         blocks.push(LineBlock { glyphs: block_glyphs, height: block_height, is_active });
     }
 
@@ -200,8 +241,8 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
         let start_x = 310;
 
         layers.push(TextLayer {
-            x: start_x,
-            y: y_float.max(0.0) as u16,
+            x: start_x as i16,
+            y: y_float as i16,
             width: actual_width as u16,
             height: height_ceil as u16,
             is_active: block.is_active,

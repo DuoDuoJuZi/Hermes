@@ -57,10 +57,13 @@ pub fn pack_text_layer(layer: &TextLayer) -> Vec<u8> {
 
 /// 封装现成的 RGB888 图像矩阵
 pub fn pack_cover_matrix(matrix: &ImageMatrix) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(matrix.rgb_data.len() + 4);
+    let mut payload = Vec::with_capacity(matrix.rgb_data.len() + 7);
     payload.extend_from_slice(&(matrix.width as u16).to_le_bytes());
     payload.extend_from_slice(&(matrix.height as u16).to_le_bytes());
-    payload.extend_from_slice(&matrix.rgb_data);    
+    payload.push(matrix.theme_color.0);
+    payload.push(matrix.theme_color.1);
+    payload.push(matrix.theme_color.2);
+    payload.extend_from_slice(&matrix.rgb_data);
     build_packet(PacketType::CoverRgb888, &payload)
 }
 
