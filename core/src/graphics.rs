@@ -26,6 +26,7 @@ pub struct TextLayer {
     pub y: u16,
     pub width: u16,
     pub height: u16,
+    pub is_active: u8,
     pub pixel_data: Vec<u8>,
 }
 
@@ -33,7 +34,7 @@ pub struct TextLayer {
 pub async fn fetch_cover_matrix(pic_url: &str) -> Result<ImageMatrix, Box<dyn Error>> {
     let img_bytes = reqwest::get(pic_url).await?.bytes().await?;
     let img = image::load_from_memory(&img_bytes)?.into_rgb8();
-    let resized = image::imageops::resize(&img, 100, 100, FilterType::Lanczos3);
+    let resized = image::imageops::resize(&img, 200, 200, FilterType::Lanczos3);
 
     let mut rgb_data = Vec::with_capacity((resized.width() * resized.height() * 3) as usize);
     for y in 0..resized.height() {
@@ -54,19 +55,7 @@ pub async fn fetch_cover_matrix(pic_url: &str) -> Result<ImageMatrix, Box<dyn Er
 
 /// 遍历像素根据 RGB 转义序列直接在控制台彩色打印输出
 pub fn print_cover_to_console(matrix: &ImageMatrix) {
-    println!("--- 涓撹緫灏侀潰棰勮 ---");
-    let mut idx = 0;
-    for _ in 0..matrix.height {
-        let mut line = String::new();
-        for _ in 0..matrix.width {
-            let r = matrix.rgb_data[idx];
-            let g = matrix.rgb_data[idx + 1];
-            let b = matrix.rgb_data[idx + 2];
-            idx += 3;
-            line.push_str(&format!("\x1b[38;2;{};{};{}m鈻堚枅\x1b[0m", r, g, b));
-        }
-        println!("{}", line);
-    }
+    println!("--- 专辑封面已解析 (控制台预览由于编码问题可能乱码，此处已隐藏) ---");
 }
 
 /// 快捷方法用于合并网络下载与控制台封面的打印任务
@@ -92,15 +81,16 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
     struct LineBlock<'a> {
         glyphs: Vec<GlyphInfo<'a>>,
         height: f32,
+        is_active: u8,
     }
 
     let mut blocks = Vec::new();
 
     for (i, line) in lines.iter().enumerate() {
-        let (size, alpha_mult, is_bold) = if i == 2 {
-            (46.0, 1.0, true)
+        let (size, alpha_mult, is_bold, is_active) = if i == 3 {
+            (46.0, 1.0, true, 1u8) // active
         } else {
-            (32.0, 0.9, true)
+            (32.0, 1.0, true, 0u8) // inactive
         };
 
         let scale = Scale::uniform(size);
@@ -109,7 +99,7 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
 
         let trimmed = line.trim();
         if trimmed.is_empty() {
-            blocks.push(LineBlock { glyphs: vec![], height: 0.0 });
+            blocks.push(LineBlock { glyphs: vec![], height: 0.0, is_active });
             continue;
         }
 
@@ -140,30 +130,29 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
         }
 
         block_height += size * 0.3; // padding
-        blocks.push(LineBlock { glyphs: block_glyphs, height: block_height });
+        blocks.push(LineBlock { glyphs: block_glyphs, height: block_height, is_active });
     }
 
-    if blocks.is_empty() || blocks.len() < 5 {
+    if blocks.is_empty() || blocks.len() < 7 {
         return None;
     }
 
-    let top_height = blocks[0].height + blocks[1].height;
-    let bottom_height = blocks[3].height + blocks[4].height;
-    let center_height = blocks[2].height;
+    let top_height = blocks[0].height + blocks[1].height + blocks[2].height;
+    let bottom_height = blocks[4].height + blocks[5].height + blocks[6].height;
+    let center_height = blocks[3].height;
 
     let half_offset = top_height.max(bottom_height);
 
     let start_y_0 = half_offset - top_height;
     let start_y_1 = start_y_0 + blocks[0].height;
-    let start_y_2 = half_offset;
-    let start_y_3 = start_y_2 + blocks[2].height;
+    let start_y_2 = start_y_1 + blocks[1].height;
+    let start_y_3 = half_offset;
     let start_y_4 = start_y_3 + blocks[3].height;
+    let start_y_5 = start_y_4 + blocks[4].height;
+    let start_y_6 = start_y_5 + blocks[5].height;
 
-    let y_offsets = [start_y_0, start_y_1, start_y_2, start_y_3, start_y_4];
-    
-    // We want the total block to be centered vertically on 480 screen.
-    // the virtual "start" is at Y=0, "center" is at half_offset.
-    // virtual total height = half_offset * 2.0 + center_height.
+    let y_offsets = [start_y_0, start_y_1, start_y_2, start_y_3, start_y_4, start_y_5, start_y_6];
+
     let virtual_total_height = half_offset * 2.0 + center_height;
     let screen_y_base = (480.0 - virtual_total_height) / 2.0;
 
@@ -215,6 +204,7 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
             y: y_float.max(0.0) as u16,
             width: actual_width as u16,
             height: height_ceil as u16,
+            is_active: block.is_active,
             pixel_data,
         });
     }

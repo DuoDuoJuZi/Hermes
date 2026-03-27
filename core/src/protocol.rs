@@ -45,11 +45,12 @@ pub fn pack_clear_rect(x: u16, y: u16, width: u16, height: u16) -> Vec<u8> {
 
 /// 封装包含小块灰度文本图层的指令包
 pub fn pack_text_layer(layer: &TextLayer) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(layer.pixel_data.len() + 8);
+    let mut payload = Vec::with_capacity(layer.pixel_data.len() + 9);
     payload.extend_from_slice(&layer.x.to_le_bytes());
     payload.extend_from_slice(&layer.y.to_le_bytes());
     payload.extend_from_slice(&layer.width.to_le_bytes());
     payload.extend_from_slice(&layer.height.to_le_bytes());
+    payload.push(layer.is_active);
     payload.extend_from_slice(&layer.pixel_data);
     build_packet(PacketType::TextLayer, &payload)
 }

@@ -1,10 +1,54 @@
 /**
  * @Author: DuoDuoJuZi
  * @Date: 2026-03-27
- * @brief ä¸²å£æ•°æ®åè®®è§£æžæºä»£ç ï¼Œè´Ÿè´£è§£æžæŽ¥æ”¶åˆ°çš„æŒ‡ä»¤å¹¶é©±åŠ¨ LCD è¿›è¡Œç»˜åˆ¶ã€‚
+ * @brief ´®¿ÚÊý¾ÝÐ­Òé½âÎöÔ´´úÂë£¬¸ºÔð½âÎö½ÓÊÕµ½µÄÖ¸Áî²¢Çý¶¯ LCD ½øÐÐ»æÖÆ¡£
  */
 #include "protocol_parser.h"
 #include "lcd_rgb.h"
+
+/**
+ * @brief °²È«»æÖÆ´øÓÐÕýÈ·ÑÕÉ«Ä£Ê½×ª»»µÄµãÓÃÓÚ·âÃæÍ¼²ã¡£
+ * @param x Ë®Æ½×ø±ê
+ * @param y ´¹Ö±×ø±ê
+ * @param r ºìÉ«·ÖÁ¿
+ * @param g ÂÌÉ«·ÖÁ¿
+ * @param b À¶É«·ÖÁ¿
+ */
+static void Safe_DrawPoint_Layer0(uint16_t x, uint16_t y, uint8_t r, uint8_t g, uint8_t b) {
+    uint32_t final_color = 0;
+#if ColorMode_0 == LTDC_PIXEL_FORMAT_RGB565
+    final_color = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+#elif ColorMode_0 == LTDC_PIXEL_FORMAT_ARGB1555
+    final_color = 0x8000 | ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+#else
+    final_color = (0xFF << 24) | (r << 16) | (g << 8) | b;
+#endif
+    LCD_DrawPoint(x, y, final_color);
+}
+
+/**
+ * @brief °²È«»æÖÆ´øÓÐÕýÈ·ÑÕÉ«Ä£Ê½×ª»»µÄµãÓÃÓÚ¸è´ÊÍ¼²ã¡£
+ * @param x Ë®Æ½×ø±ê
+ * @param y ´¹Ö±×ø±ê
+ * @param r ºìÉ«·ÖÁ¿
+ * @param g ÂÌÉ«·ÖÁ¿
+ * @param b À¶É«·ÖÁ¿
+ */
+static void Safe_DrawPoint_Layer1(uint16_t x, uint16_t y, uint8_t r, uint8_t g, uint8_t b) {
+    uint32_t final_color = 0;
+#if LCD_NUM_LAYERS == 2
+    #if ColorMode_1 == LTDC_PIXEL_FORMAT_RGB565
+        final_color = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+    #elif ColorMode_1 == LTDC_PIXEL_FORMAT_ARGB1555
+        final_color = 0x8000 | ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+    #else
+        final_color = (0xFF << 24) | (r << 16) | (g << 8) | b;
+    #endif
+#else
+    final_color = (0xFF << 24) | (r << 16) | (g << 8) | b;
+#endif
+    LCD_DrawPoint(x, y, final_color);
+}
 
 typedef enum {
     STATE_HEAD1 = 0,
@@ -27,13 +71,13 @@ typedef struct {
 
 ProtocolParser parser;
 
-uint8_t rx_payload_buffer[82000];
+#define RX_PAYLOAD_BUF_SIZE 150000
+uint8_t *const rx_payload_buffer = (uint8_t *)0x24000000;
 
 /**
- * @brief ç»˜åˆ¶å…¨å½©å°é¢å›¾åƒ
- * @param data å›¾åƒåƒç´ åŠå®½é«˜æ•°æ®
- * @param length æ•°æ®æ€»é•¿åº¦
- * @return æ— 
+ * @brief »æÖÆÈ«²Ê·âÃæÍ¼Ïñ¡£
+ * @param data Í¼ÏñÏñËØ¼°¿í¸ßÊý¾Ý
+ * @param length Êý¾Ý×Ü³¤¶È
  */
 void Draw_Cover(uint8_t *data, uint32_t length) {
     uint16_t width = data[0] | (data[1] << 8);
@@ -41,7 +85,7 @@ void Draw_Cover(uint8_t *data, uint32_t length) {
     uint32_t data_idx = 4;
     int16_t start_x = (300 - (int16_t)width) / 2;
     if (start_x < 0) start_x = 0;
-    int16_t start_y = (480 - (int16_t)height) / 2;
+    int16_t start_y = (480 - (int16_t)height) / 2 - 40;
     if (start_y < 0) start_y = 0;
 
     LCD_SetColor(0xFF000000);
@@ -53,10 +97,9 @@ void Draw_Cover(uint8_t *data, uint32_t length) {
                 uint8_t r = data[data_idx++];
                 uint8_t g = data[data_idx++];
                 uint8_t b = data[data_idx++];
-                uint32_t color = (0xFF << 24) | (r << 16) | (g << 8) | b;
 
                 if (start_x + x < 300 && start_y + y < 480) {
-                    LCD_DrawPoint(start_x + x, start_y + y, color);
+                    Safe_DrawPoint_Layer0(start_x + x, start_y + y, r, g, b);
                 }
             }
         }
@@ -64,47 +107,40 @@ void Draw_Cover(uint8_t *data, uint32_t length) {
 }
 
 /**
- * @brief ç»˜åˆ¶ç°åº¦æ­Œè¯æ–‡æœ¬
- * @param data æ–‡æœ¬ç‚¹é˜µç°åº¦åƒç´ åŠå®½é«˜æ•°æ®
- * @param length æ•°æ®æ€»é•¿åº¦
- * @return æ— 
+ * @brief »æÖÆ»Ò¶È¸è´ÊÎÄ±¾¡£
+ * @param data ÎÄ±¾µãÕó»Ò¶ÈÏñËØ¼°¿í¸ßÊý¾Ý
+ * @param length Êý¾Ý×Ü³¤¶È
  */
 void Draw_TextGrayscale(uint8_t *data, uint32_t length) {
     uint16_t width = data[0] | (data[1] << 8);
     uint16_t height = data[2] | (data[3] << 8);
     uint32_t data_idx = 4;
 
-    // é™å……æ™¶é„å‰§ãšå§å²ƒç˜é”›å±¾æ•®éŽ¸ä½¸æ¹ªé™å……æ™¶(x:300~800)éå‘®æ¨‰ç»€?
     int16_t start_x = 300 + (500 - (int16_t)width) / 2;
-    if (start_x < 310) start_x = 310; // æ·‡æ¿ˆæš€æ¶“â‚¬ç€¹æ°¬ä¹æˆç¡…çª›é–¬åž®åŽ¤ç»±Ñ†åˆ›æ¶“î… åšŽ
+    if (start_x < 310) start_x = 310;
     int16_t start_y = (480 - (int16_t)height) / 2;
     if (start_y < 0) start_y = 0;
     uint32_t bg_color = 0xFF000000;
 
-                    // å¨“å‘¯â”–éç¿ é‡œé™å……æ™¶éŽ´æ ¬â‚¬å‘®ç“•ç’‡å¶…å°¯é©?
-                    LCD_SetColor(bg_color);
-                    LCD_FillRect(300, 0, 500, 480);
+    LCD_SetColor(bg_color);
+    LCD_FillRect(300, 0, 500, 480);
 
-                    for (uint16_t y = 0; y < height; y++) {
-                        for (uint16_t x = 0; x < width; x++) {
-                            if (data_idx < length) {
-                                uint8_t alpha = data[data_idx++];
-                                if (alpha > 10) {
-                                    if (start_x + x >= 300 && start_x + x < 800 && start_y + y < 480) {
-                                        uint8_t r = alpha;
-                                        uint8_t g = alpha;
-                                        uint8_t b = alpha;
-                                        uint32_t text_color = (0xFF << 24) | (r << 16) | (g << 8) | b;
-                                        LCD_DrawPoint(start_x + x, start_y + y, text_color);
-                                    }
-                                }
-                            }
-                        }
+    for (uint16_t y = 0; y < height; y++) {
+        for (uint16_t x = 0; x < width; x++) {
+            if (data_idx < length) {
+                uint8_t alpha = data[data_idx++];
+                if (alpha > 10) {
+                    if (start_x + x >= 300 && start_x + x < 800 && start_y + y < 480) {
+                        Safe_DrawPoint_Layer1(start_x + x, start_y + y, alpha, alpha, alpha);
                     }
-}/**
- * @brief åˆå§‹åŒ–åè®®è§£æžçŠ¶æ€æœº
- * @param æ— 
- * @return æ— 
+                }
+            }
+        }
+    }
+}
+
+/**
+ * @brief ³õÊ¼»¯Ð­Òé½âÎö×´Ì¬»ú¡£
  */
 void Protocol_Init(void) {
     parser.state = STATE_HEAD1;
@@ -112,42 +148,41 @@ void Protocol_Init(void) {
 }
 
 /**
- * @brief è§£æžå•ä¸ªå­—èŠ‚å¹¶é©±åŠ¨çŠ¶æ€æœºè¿è½¬
- * @param byte æŽ¥æ”¶åˆ°çš„å•ä¸ªå­—èŠ‚æ•°æ®
- * @return æ— 
+ * @brief ½âÎöµ¥¸ö×Ö½Ú²¢Çý¶¯×´Ì¬»úÔË×ª¡£
+ * @param byte ½ÓÊÕµ½µÄµ¥¸ö×Ö½ÚÊý¾Ý
  */
 void Protocol_ParseByte(uint8_t byte) {
     switch (parser.state) {
         case STATE_HEAD1:
             if (byte == 0xAA) parser.state = STATE_HEAD2;
             break;
-            
+
         case STATE_HEAD2:
             if (byte == 0x55) parser.state = STATE_TYPE;
             else parser.state = STATE_HEAD1;
             break;
-            
+
         case STATE_TYPE:
             parser.type = byte;
             parser.len = 0;
             parser.len_cnt = 0;
             parser.state = STATE_LEN;
             break;
-            
+
         case STATE_LEN:
             parser.len |= (byte << (8 * parser.len_cnt));
             parser.len_cnt++;
             if (parser.len_cnt == 4) {
                 parser.payload_cnt = 0;
                 parser.checksum_calc = 0;
-                if (parser.len > 0 && parser.len <= sizeof(rx_payload_buffer)) {
+                if (parser.len > 0 && parser.len <= RX_PAYLOAD_BUF_SIZE) {
                     parser.state = STATE_PAYLOAD;
                 } else {
                     parser.state = STATE_HEAD1;
                 }
             }
             break;
-            
+
         case STATE_PAYLOAD:
             parser.payload_buf[parser.payload_cnt++] = byte;
             parser.checksum_calc += byte;
@@ -155,7 +190,7 @@ void Protocol_ParseByte(uint8_t byte) {
                 parser.state = STATE_CHECKSUM;
             }
             break;
-            
+
         case STATE_CHECKSUM:
             if (byte == parser.checksum_calc) {
                 if (parser.type == 0x01) {
@@ -163,7 +198,6 @@ void Protocol_ParseByte(uint8_t byte) {
                 } else if (parser.type == 0x02) {
                     Draw_TextGrayscale(parser.payload_buf, parser.len);
                 } else if (parser.type == 0x03) {
-                    // TYPE 0x03: æ¸…é™¤æŒ‡å®šåŒºåŸŸ
                     uint16_t x = parser.payload_buf[0] | (parser.payload_buf[1] << 8);
                     uint16_t y = parser.payload_buf[2] | (parser.payload_buf[3] << 8);
                     uint16_t w = parser.payload_buf[4] | (parser.payload_buf[5] << 8);
@@ -171,23 +205,28 @@ void Protocol_ParseByte(uint8_t byte) {
                     LCD_SetColor(0xFF000000);
                     LCD_FillRect(x, y, w, h);
                 } else if (parser.type == 0x04) {
-                    // TYPE 0x04: é¦ã„¦å¯šç€¹æ°¬æ½—éå›©ç²¯é’è·ºçš¬é§æ¥ƒä¼†æ´ï¹€æµ˜
                     uint16_t x_off = parser.payload_buf[0] | (parser.payload_buf[1] << 8);
                     uint16_t y_off = parser.payload_buf[2] | (parser.payload_buf[3] << 8);
                     uint16_t w = parser.payload_buf[4] | (parser.payload_buf[5] << 8);
                     uint16_t h = parser.payload_buf[6] | (parser.payload_buf[7] << 8);
-                    uint32_t data_idx = 8;
+                    uint8_t is_active = parser.payload_buf[8];
+                    uint32_t data_idx = 9;
+
+                    uint32_t base_color = (is_active == 1) ? LCD_WHITE : LIGHT_GREY;
+                    uint8_t base_r = (base_color >> 16) & 0xFF;
+                    uint8_t base_g = (base_color >> 8) & 0xFF;
+                    uint8_t base_b = base_color & 0xFF;
+
                     for (uint16_t y = 0; y < h; y++) {
                         for (uint16_t x = 0; x < w; x++) {
                             if (data_idx < parser.len) {
                                 uint8_t alpha = parser.payload_buf[data_idx++];
                                 if (alpha > 10) {
                                     if (x_off + x < 800 && y_off + y < 480) {
-                                        uint8_t r = alpha;
-                                        uint8_t g = alpha;
-                                        uint8_t b = alpha;
-                                        uint32_t text_color = (0xFF << 24) | (r << 16) | (g << 8) | b;
-                                        LCD_DrawPoint(x_off + x, y_off + y, text_color);
+                                        uint8_t r = (base_r * alpha) / 255;
+                                        uint8_t g = (base_g * alpha) / 255;
+                                        uint8_t b = (base_b * alpha) / 255;
+                                        Safe_DrawPoint_Layer1(x_off + x, y_off + y, r, g, b);
                                     }
                                 }
                             }
@@ -197,7 +236,7 @@ void Protocol_ParseByte(uint8_t byte) {
             }
             parser.state = STATE_HEAD1;
             break;
-            
+
         default:
             parser.state = STATE_HEAD1;
             break;

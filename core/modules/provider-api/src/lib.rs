@@ -139,21 +139,18 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
                 if !current_lyric.is_empty() {
                     let mut lines = Vec::new();
                     
+                    let mut display_text = current_lyric.clone();
                     if let Some(trans) = &current_lyric_obj.trans {
-                        // 有翻译：结构为 (空), (上一句), (当前句), (翻译), (下一句)
-                        lines.push(String::new());
-                        if target_idx >= 1 { lines.push(lyrics[target_idx - 1].text.clone()); } else { lines.push(String::new()); }
-                        lines.push(current_lyric.clone());
-                        lines.push(trans.clone());
-                        if target_idx + 1 < lyrics.len() { lines.push(lyrics[target_idx + 1].text.clone()); } else { lines.push(String::new()); }
-                    } else {
-                        // 无翻译：常规结构 (前两句), (前一句), (当前句), (后一句), (后两句)
-                        if target_idx >= 2 { lines.push(lyrics[target_idx - 2].text.clone()); } else { lines.push(String::new()); }
-                        if target_idx >= 1 { lines.push(lyrics[target_idx - 1].text.clone()); } else { lines.push(String::new()); }
-                        lines.push(current_lyric.clone());
-                        if target_idx + 1 < lyrics.len() { lines.push(lyrics[target_idx + 1].text.clone()); } else { lines.push(String::new()); }
-                        if target_idx + 2 < lyrics.len() { lines.push(lyrics[target_idx + 2].text.clone()); } else { lines.push(String::new()); }
+                        display_text = format!("{} {}", display_text, trans);
                     }
+
+                    if target_idx >= 3 { lines.push(lyrics[target_idx - 3].text.clone()); } else { lines.push(String::new()); }
+                    if target_idx >= 2 { lines.push(lyrics[target_idx - 2].text.clone()); } else { lines.push(String::new()); }
+                    if target_idx >= 1 { lines.push(lyrics[target_idx - 1].text.clone()); } else { lines.push(String::new()); }
+                    lines.push(display_text);
+                    if target_idx + 1 < lyrics.len() { lines.push(lyrics[target_idx + 1].text.clone()); } else { lines.push(String::new()); }
+                    if target_idx + 2 < lyrics.len() { lines.push(lyrics[target_idx + 2].text.clone()); } else { lines.push(String::new()); }
+                    if target_idx + 3 < lyrics.len() { lines.push(lyrics[target_idx + 3].text.clone()); } else { lines.push(String::new()); }
 
                     let json_str = serde_json::to_string(&lines).unwrap_or_default();
                     println!("{}", current_lyric);
