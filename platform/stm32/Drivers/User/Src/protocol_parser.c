@@ -39,13 +39,13 @@ void Draw_Cover(uint8_t *data, uint32_t length) {
     uint16_t width = data[0] | (data[1] << 8);
     uint16_t height = data[2] | (data[3] << 8);
     uint32_t data_idx = 4;
-    int16_t start_x = (400 - (int16_t)width) / 2;
+    int16_t start_x = (300 - (int16_t)width) / 2;
     if (start_x < 0) start_x = 0;
     int16_t start_y = (480 - (int16_t)height) / 2;
     if (start_y < 0) start_y = 0;
 
     LCD_SetColor(0xFF000000);
-    LCD_FillRect(0, 0, 400, 480);
+    LCD_FillRect(0, 0, 300, 480);
 
     for (uint16_t y = 0; y < height; y++) {
         for (uint16_t x = 0; x < width; x++) {
@@ -55,7 +55,7 @@ void Draw_Cover(uint8_t *data, uint32_t length) {
                 uint8_t b = data[data_idx++];
                 uint32_t color = (0xFF << 24) | (r << 16) | (g << 8) | b;
 
-                if (start_x + x < 400 && start_y + y < 480) {
+                if (start_x + x < 300 && start_y + y < 480) {
                     LCD_DrawPoint(start_x + x, start_y + y, color);
                 }
             }
@@ -73,34 +73,34 @@ void Draw_TextGrayscale(uint8_t *data, uint32_t length) {
     uint16_t width = data[0] | (data[1] << 8);
     uint16_t height = data[2] | (data[3] << 8);
     uint32_t data_idx = 4;
-    
-    // 右侧显示歌词，支持在右侧(x:400~800)内显示
-    int16_t start_x = 400 + (400 - (int16_t)width) / 2;
-    if (start_x < 410) start_x = 410; // 保留一定左边距避免紧贴中线
+
+    // 鍙充晶鏄剧ず姝岃瘝锛屾敮鎸佸湪鍙充晶(x:300~800)鍐呮樉绀?
+    int16_t start_x = 300 + (500 - (int16_t)width) / 2;
+    if (start_x < 310) start_x = 310; // 淇濈暀涓€瀹氬乏杈硅窛閬垮厤绱ц创涓嚎
     int16_t start_y = (480 - (int16_t)height) / 2;
     if (start_y < 0) start_y = 0;
     uint32_t bg_color = 0xFF000000;
 
-    // 清空整个右侧或者歌词区域
-    LCD_SetColor(bg_color);
-    LCD_FillRect(400, 0, 400, 480);
+                    // 娓呯┖鏁翠釜鍙充晶鎴栬€呮瓕璇嶅尯鍩?
+                    LCD_SetColor(bg_color);
+                    LCD_FillRect(300, 0, 500, 480);
 
-    for (uint16_t y = 0; y < height; y++) {
-        for (uint16_t x = 0; x < width; x++) {
-            if (data_idx < length) {
-                uint8_t alpha = data[data_idx++];
-                if (alpha > 10) {
-                    if (start_x + x >= 400 && start_x + x < 800 && start_y + y < 480) {
-                        uint8_t r = alpha;
-                        uint8_t g = (alpha * 235) / 255;
-                        uint8_t b = (alpha * 245) / 255;
-                        uint32_t text_color = (0xFF << 24) | (r << 16) | (g << 8) | b;
-                        LCD_DrawPoint(start_x + x, start_y + y, text_color);
+                    for (uint16_t y = 0; y < height; y++) {
+                        for (uint16_t x = 0; x < width; x++) {
+                            if (data_idx < length) {
+                                uint8_t alpha = data[data_idx++];
+                                if (alpha > 10) {
+                                    if (start_x + x >= 300 && start_x + x < 800 && start_y + y < 480) {
+                                        uint8_t r = alpha;
+                                        uint8_t g = alpha;
+                                        uint8_t b = alpha;
+                                        uint32_t text_color = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                                        LCD_DrawPoint(start_x + x, start_y + y, text_color);
+                                    }
+                                }
+                            }
+                        }
                     }
-                }
-            }
-        }
-    }
 }/**
  * @brief 初始化协议解析状态机
  * @param 无
@@ -184,8 +184,8 @@ void Protocol_ParseByte(uint8_t byte) {
                                 if (alpha > 10) {
                                     if (x_off + x < 800 && y_off + y < 480) {
                                         uint8_t r = alpha;
-                                        uint8_t g = (alpha * 235) / 255;
-                                        uint8_t b = (alpha * 245) / 255;
+                                        uint8_t g = alpha;
+                                        uint8_t b = alpha;
                                         uint32_t text_color = (0xFF << 24) | (r << 16) | (g << 8) | b;
                                         LCD_DrawPoint(x_off + x, y_off + y, text_color);
                                     }

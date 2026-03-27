@@ -81,7 +81,7 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
     let font_data = std::fs::read(r#"C:\Windows\Fonts\msyh.ttc"#).ok()?;
     let font = Font::try_from_vec_and_index(font_data, 0)?;
 
-    let max_width = 380.0;
+    let max_width = 480.0;
 
     struct GlyphInfo<'a> {
         glyph: PositionedGlyph<'a>,
@@ -100,7 +100,7 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
         let (size, alpha_mult, is_bold) = if i == 2 {
             (46.0, 1.0, true)
         } else {
-            (28.0, 0.7, true)
+            (32.0, 0.9, true)
         };
 
         let scale = Scale::uniform(size);
@@ -208,7 +208,7 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
         }
         
         let y_float = screen_y_base + y_offsets[i];
-        let start_x = 410;
+        let start_x = 310;
 
         layers.push(TextLayer {
             x: start_x,

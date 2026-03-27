@@ -106,9 +106,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
             if let Some(layers) = graphics::generate_text_layers(&lines) {
                 // Clear the whole right section first
-                let clear_packet = protocol::pack_clear_rect(400, 0, 400, 480);
+                let clear_packet = protocol::pack_clear_rect(300, 0, 500, 480);
                 let _ = serial_tx_for_lyric.send(clear_packet);
-                
+
                 // Keep some delay interval? In blocking queue it's pushed serially anyway.
                 for layer in layers {
                     let packet = protocol::pack_text_layer(&layer);
