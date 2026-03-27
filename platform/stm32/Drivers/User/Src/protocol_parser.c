@@ -91,7 +91,10 @@ void Draw_TextGrayscale(uint8_t *data, uint32_t length) {
                 uint8_t alpha = data[data_idx++];
                 if (alpha > 10) {
                     if (start_x + x >= 400 && start_x + x < 800 && start_y + y < 480) {
-                        uint32_t text_color = (0xFF << 24) | (alpha << 16) | (alpha << 8) | alpha;
+                        uint8_t r = alpha;
+                        uint8_t g = (alpha * 235) / 255;
+                        uint8_t b = (alpha * 245) / 255;
+                        uint32_t text_color = (0xFF << 24) | (r << 16) | (g << 8) | b;
                         LCD_DrawPoint(start_x + x, start_y + y, text_color);
                     }
                 }
@@ -168,7 +171,7 @@ void Protocol_ParseByte(uint8_t byte) {
                     LCD_SetColor(0xFF000000);
                     LCD_FillRect(x, y, w, h);
                 } else if (parser.type == 0x04) {
-                    // TYPE 0x04: 在指定坐标绘制小块灰度图
+                    // TYPE 0x04: 鍦ㄦ寚瀹氬潗鏍囩粯鍒跺皬鍧楃伆搴﹀浘
                     uint16_t x_off = parser.payload_buf[0] | (parser.payload_buf[1] << 8);
                     uint16_t y_off = parser.payload_buf[2] | (parser.payload_buf[3] << 8);
                     uint16_t w = parser.payload_buf[4] | (parser.payload_buf[5] << 8);
@@ -180,7 +183,10 @@ void Protocol_ParseByte(uint8_t byte) {
                                 uint8_t alpha = parser.payload_buf[data_idx++];
                                 if (alpha > 10) {
                                     if (x_off + x < 800 && y_off + y < 480) {
-                                        uint32_t text_color = (0xFF << 24) | (alpha << 16) | (alpha << 8) | alpha;
+                                        uint8_t r = alpha;
+                                        uint8_t g = (alpha * 235) / 255;
+                                        uint8_t b = (alpha * 245) / 255;
+                                        uint32_t text_color = (0xFF << 24) | (r << 16) | (g << 8) | b;
                                         LCD_DrawPoint(x_off + x, y_off + y, text_color);
                                     }
                                 }

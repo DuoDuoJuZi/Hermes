@@ -98,9 +98,9 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
 
     for (i, line) in lines.iter().enumerate() {
         let (size, alpha_mult, is_bold) = if i == 2 {
-            (40.0, 1.0, true)
+            (46.0, 1.0, true)
         } else {
-            (24.0, 0.7, true)
+            (28.0, 0.7, true)
         };
 
         let scale = Scale::uniform(size);

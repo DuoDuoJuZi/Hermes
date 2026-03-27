@@ -19,6 +19,7 @@ use windows::Media::Control::{
 #[derive(Deserialize, Debug)]
 struct LrcResponse {
     lrc: Option<LrcData>,
+    tlyric: Option<LrcData>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -30,6 +31,7 @@ struct LrcData {
 struct LyricLine {
     time: f64,
     text: String,
+    trans: Option<String>,
 }
 
 /**
@@ -38,7 +40,7 @@ struct LyricLine {
 async fn fetch_and_parse_lrc(client: &reqwest::Client, song_id: &str) -> std::result::Result<Vec<LyricLine>, Box<dyn std::error::Error>> {
     let url = format!("http://127.0.0.1:10754/lyric?id={}&realIP=211.161.244.70", song_id);
     let resp = client.get(&url).send().await?.json::<LrcResponse>().await?;
-    
+
     let mut lyrics = Vec::new();
     if let Some(lrc_data) = resp.lrc {
         for line in lrc_data.lyric.lines() {
@@ -46,19 +48,48 @@ async fn fetch_and_parse_lrc(client: &reqwest::Client, song_id: &str) -> std::re
                 if let Some(end_idx) = line.find(']') {
                     let time_str = &line[1..end_idx];
                     let text = line[end_idx + 1..].trim().to_string();
-                    
+
                     let mut parts = time_str.split(':');
                     if let (Some(m), Some(s)) = (parts.next(), parts.next()) {
                         if let (Ok(minutes), Ok(seconds)) = (m.parse::<f64>(), s.parse::<f64>()) {
                             let time = minutes * 60.0 + seconds;
-                            lyrics.push(LyricLine { time, text });
+                            lyrics.push(LyricLine { time, text, trans: None });
                         }
                     }
                 }
             }
         }
     }
-    
+
+    let mut tlyrics = Vec::new();
+    if let Some(t_data) = resp.tlyric {
+        for line in t_data.lyric.lines() {
+            if line.starts_with('[') {
+                if let Some(end_idx) = line.find(']') {
+                    let time_str = &line[1..end_idx];
+                    let text = line[end_idx + 1..].trim().to_string();
+
+                    let mut parts = time_str.split(':');
+                    if let (Some(m), Some(s)) = (parts.next(), parts.next()) {
+                        if let (Ok(minutes), Ok(seconds)) = (m.parse::<f64>(), s.parse::<f64>()) {
+                            let time = minutes * 60.0 + seconds;
+                            if !text.is_empty() {
+                                tlyrics.push((time, text));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 将翻译合并到主歌词中
+    for lyric in &mut lyrics {
+        if let Some(t) = tlyrics.iter().find(|t| (t.0 - lyric.time).abs() < 1.0) {
+            lyric.trans = Some(t.1.clone());
+        }
+    }
+
     lyrics.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
     Ok(lyrics)
 }
@@ -103,18 +134,27 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
             let target_idx = lyrics.partition_point(|line| line.time <= position).saturating_sub(1);
 
             if target_idx != current_idx && target_idx < lyrics.len() {
-                let current_lyric = &lyrics[target_idx].text;
+                let current_lyric_obj = &lyrics[target_idx];
+                let current_lyric = &current_lyric_obj.text;
                 if !current_lyric.is_empty() {
                     let mut lines = Vec::new();
-                    // 前两句
-                    if target_idx >= 2 { lines.push(lyrics[target_idx - 2].text.clone()); } else { lines.push(String::new()); }
-                    if target_idx >= 1 { lines.push(lyrics[target_idx - 1].text.clone()); } else { lines.push(String::new()); }
-                    // 当前句
-                    lines.push(current_lyric.clone());
-                    // 后两句
-                    if target_idx + 1 < lyrics.len() { lines.push(lyrics[target_idx + 1].text.clone()); } else { lines.push(String::new()); }
-                    if target_idx + 2 < lyrics.len() { lines.push(lyrics[target_idx + 2].text.clone()); } else { lines.push(String::new()); }
                     
+                    if let Some(trans) = &current_lyric_obj.trans {
+                        // 有翻译：结构为 (空), (上一句), (当前句), (翻译), (下一句)
+                        lines.push(String::new());
+                        if target_idx >= 1 { lines.push(lyrics[target_idx - 1].text.clone()); } else { lines.push(String::new()); }
+                        lines.push(current_lyric.clone());
+                        lines.push(trans.clone());
+                        if target_idx + 1 < lyrics.len() { lines.push(lyrics[target_idx + 1].text.clone()); } else { lines.push(String::new()); }
+                    } else {
+                        // 无翻译：常规结构 (前两句), (前一句), (当前句), (后一句), (后两句)
+                        if target_idx >= 2 { lines.push(lyrics[target_idx - 2].text.clone()); } else { lines.push(String::new()); }
+                        if target_idx >= 1 { lines.push(lyrics[target_idx - 1].text.clone()); } else { lines.push(String::new()); }
+                        lines.push(current_lyric.clone());
+                        if target_idx + 1 < lyrics.len() { lines.push(lyrics[target_idx + 1].text.clone()); } else { lines.push(String::new()); }
+                        if target_idx + 2 < lyrics.len() { lines.push(lyrics[target_idx + 2].text.clone()); } else { lines.push(String::new()); }
+                    }
+
                     let json_str = serde_json::to_string(&lines).unwrap_or_default();
                     println!("{}", current_lyric);
                     let _ = lyric_tx.send(json_str);
