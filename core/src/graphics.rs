@@ -100,7 +100,7 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
         let (size, alpha_mult, is_bold) = if i == 2 {
             (40.0, 1.0, true)
         } else {
-            (24.0, 0.5, false)
+            (24.0, 0.7, true)
         };
 
         let scale = Scale::uniform(size);
@@ -208,10 +208,8 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
         }
         
         let y_float = screen_y_base + y_offsets[i];
-        let start_x = 400 + (400 - actual_width as u16) / 2;
-        let mut start_x = start_x;
-        if start_x < 410 { start_x = 410; }
-        
+        let start_x = 410;
+
         layers.push(TextLayer {
             x: start_x,
             y: y_float.max(0.0) as u16,
