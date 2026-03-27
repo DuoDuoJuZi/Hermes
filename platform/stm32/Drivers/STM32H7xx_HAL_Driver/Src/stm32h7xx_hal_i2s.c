@@ -170,7 +170,7 @@
 
        When The compilation define USE_HAL_I2S_REGISTER_CALLBACKS is set to 0 or
        not defined, the callback registering feature is not available
-       and weak callbacks are used.
+       and weak (surcharged) callbacks are used.
 
 
   @endverbatim
@@ -192,13 +192,7 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* Private define ------------------------------------------------------------*/
-/** @defgroup I2S_Private_Define I2S Private Define
-  * @{
-  */
 #define I2S_TIMEOUT 0xFFFFUL
-/**
-  * @}
-  */
 
 /* Private macro -------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
@@ -218,7 +212,7 @@ static void               I2S_Transmit_32Bit_IT(I2S_HandleTypeDef *hi2s);
 static void               I2S_Receive_16Bit_IT(I2S_HandleTypeDef *hi2s);
 static void               I2S_Receive_32Bit_IT(I2S_HandleTypeDef *hi2s);
 static HAL_StatusTypeDef  I2S_WaitFlagStateUntilTimeout(I2S_HandleTypeDef *hi2s, uint32_t Flag, FlagStatus State,
-                                                        uint32_t Tickstart, uint32_t Timeout);
+                                                        uint32_t Timeout);
 /**
   * @}
   */
@@ -543,8 +537,6 @@ __weak void HAL_I2S_MspDeInit(I2S_HandleTypeDef *hi2s)
   *                the configuration information for the specified I2S.
   * @param  CallbackID ID of the callback to be registered
   * @param  pCallback pointer to the Callback function
-  * @note   The HAL_I2S_RegisterCallback() may be called before HAL_I2S_Init() in HAL_I2S_STATE_RESET
-  *         to register callbacks for HAL_I2S_MSPINIT_CB_ID and HAL_I2S_MSPDEINIT_CB_ID
   * @retval HAL status
   */
 HAL_StatusTypeDef HAL_I2S_RegisterCallback(I2S_HandleTypeDef *hi2s, HAL_I2S_CallbackIDTypeDef CallbackID,
@@ -559,6 +551,8 @@ HAL_StatusTypeDef HAL_I2S_RegisterCallback(I2S_HandleTypeDef *hi2s, HAL_I2S_Call
 
     return HAL_ERROR;
   }
+  /* Process locked */
+  __HAL_LOCK(hi2s);
 
   if (HAL_I2S_STATE_READY == hi2s->State)
   {
@@ -640,6 +634,8 @@ HAL_StatusTypeDef HAL_I2S_RegisterCallback(I2S_HandleTypeDef *hi2s, HAL_I2S_Call
     status =  HAL_ERROR;
   }
 
+  /* Release Lock */
+  __HAL_UNLOCK(hi2s);
   return status;
 }
 
@@ -649,13 +645,14 @@ HAL_StatusTypeDef HAL_I2S_RegisterCallback(I2S_HandleTypeDef *hi2s, HAL_I2S_Call
   * @param  hi2s Pointer to a I2S_HandleTypeDef structure that contains
   *                the configuration information for the specified I2S.
   * @param  CallbackID ID of the callback to be unregistered
-  * @note   The HAL_I2S_UnRegisterCallback() may be called before HAL_I2S_Init() in HAL_I2S_STATE_RESET
-  *         to un-register callbacks for HAL_I2S_MSPINIT_CB_ID and HAL_I2S_MSPDEINIT_CB_ID
   * @retval HAL status
   */
 HAL_StatusTypeDef HAL_I2S_UnRegisterCallback(I2S_HandleTypeDef *hi2s, HAL_I2S_CallbackIDTypeDef CallbackID)
 {
   HAL_StatusTypeDef status = HAL_OK;
+
+  /* Process locked */
+  __HAL_LOCK(hi2s);
 
   if (HAL_I2S_STATE_READY == hi2s->State)
   {
@@ -736,6 +733,8 @@ HAL_StatusTypeDef HAL_I2S_UnRegisterCallback(I2S_HandleTypeDef *hi2s, HAL_I2S_Ca
     status =  HAL_ERROR;
   }
 
+  /* Release Lock */
+  __HAL_UNLOCK(hi2s);
   return status;
 }
 #endif /* USE_HAL_I2S_REGISTER_CALLBACKS */
@@ -804,12 +803,11 @@ HAL_StatusTypeDef HAL_I2S_UnRegisterCallback(I2S_HandleTypeDef *hi2s, HAL_I2S_Ca
   *         between Master and Slave(example: audio streaming).
   * @retval HAL status
   */
-HAL_StatusTypeDef HAL_I2S_Transmit(I2S_HandleTypeDef *hi2s, const uint16_t *pData, uint16_t Size, uint32_t Timeout)
+HAL_StatusTypeDef HAL_I2S_Transmit(I2S_HandleTypeDef *hi2s, uint16_t *pData, uint16_t Size, uint32_t Timeout)
 {
 #if defined (__GNUC__)
   __IO uint16_t *ptxdr_16bits = (__IO uint16_t *)(&(hi2s->Instance->TXDR));
 #endif /* __GNUC__ */
-  uint32_t tickstart;
 
   if ((pData == NULL) || (Size == 0UL))
   {
@@ -824,13 +822,10 @@ HAL_StatusTypeDef HAL_I2S_Transmit(I2S_HandleTypeDef *hi2s, const uint16_t *pDat
   /* Process Locked */
   __HAL_LOCK(hi2s);
 
-  /* Init tickstart for timeout management*/
-  tickstart = HAL_GetTick();
-
   /* Set state and reset error code */
   hi2s->State       = HAL_I2S_STATE_BUSY_TX;
   hi2s->ErrorCode   = HAL_I2S_ERROR_NONE;
-  hi2s->pTxBuffPtr  = (const uint16_t *)pData;
+  hi2s->pTxBuffPtr  = pData;
   hi2s->TxXferSize  = Size;
   hi2s->TxXferCount = Size;
 
@@ -851,7 +846,7 @@ HAL_StatusTypeDef HAL_I2S_Transmit(I2S_HandleTypeDef *hi2s, const uint16_t *pDat
 
 
   /* Wait until TXP flag is set */
-  if (I2S_WaitFlagStateUntilTimeout(hi2s, I2S_FLAG_TXP, SET, tickstart, Timeout) != HAL_OK)
+  if (I2S_WaitFlagStateUntilTimeout(hi2s, I2S_FLAG_TXP, SET, Timeout) != HAL_OK)
   {
     /* Set the error code */
     SET_BIT(hi2s->ErrorCode, HAL_I2S_ERROR_TIMEOUT);
@@ -865,7 +860,7 @@ HAL_StatusTypeDef HAL_I2S_Transmit(I2S_HandleTypeDef *hi2s, const uint16_t *pDat
     if ((hi2s->Init.DataFormat == I2S_DATAFORMAT_24B) || (hi2s->Init.DataFormat == I2S_DATAFORMAT_32B))
     {
       /* Transmit data in 32 Bit mode */
-      hi2s->Instance->TXDR = *((const uint32_t *)hi2s->pTxBuffPtr);
+      hi2s->Instance->TXDR = *((uint32_t *)hi2s->pTxBuffPtr);
       hi2s->pTxBuffPtr += 2;
       hi2s->TxXferCount--;
     }
@@ -873,9 +868,9 @@ HAL_StatusTypeDef HAL_I2S_Transmit(I2S_HandleTypeDef *hi2s, const uint16_t *pDat
     {
       /* Transmit data in 16 Bit mode */
 #if defined (__GNUC__)
-      *ptxdr_16bits = *((const uint16_t *)hi2s->pTxBuffPtr);
+      *ptxdr_16bits = *((uint16_t *)hi2s->pTxBuffPtr);
 #else
-      *((__IO uint16_t *)&hi2s->Instance->TXDR) = *((const uint16_t *)hi2s->pTxBuffPtr);
+      *((__IO uint16_t *)&hi2s->Instance->TXDR) = *((uint16_t *)hi2s->pTxBuffPtr);
 #endif /* __GNUC__ */
 
       hi2s->pTxBuffPtr++;
@@ -883,7 +878,7 @@ HAL_StatusTypeDef HAL_I2S_Transmit(I2S_HandleTypeDef *hi2s, const uint16_t *pDat
     }
 
     /* Wait until TXP flag is set */
-    if (I2S_WaitFlagStateUntilTimeout(hi2s, I2S_FLAG_TXP, SET, tickstart, Timeout) != HAL_OK)
+    if (I2S_WaitFlagStateUntilTimeout(hi2s, I2S_FLAG_TXP, SET, Timeout) != HAL_OK)
     {
       /* Set the error code */
       SET_BIT(hi2s->ErrorCode, HAL_I2S_ERROR_TIMEOUT);
@@ -930,7 +925,6 @@ HAL_StatusTypeDef HAL_I2S_Receive(I2S_HandleTypeDef *hi2s, uint16_t *pData, uint
 #if defined (__GNUC__)
   __IO uint16_t *prxdr_16bits = (__IO uint16_t *)(&(hi2s->Instance->RXDR));
 #endif /* __GNUC__ */
-  uint32_t tickstart;
 
   if ((pData == NULL) || (Size == 0UL))
   {
@@ -944,9 +938,6 @@ HAL_StatusTypeDef HAL_I2S_Receive(I2S_HandleTypeDef *hi2s, uint16_t *pData, uint
 
   /* Process Locked */
   __HAL_LOCK(hi2s);
-
-  /* Init tickstart for timeout management*/
-  tickstart = HAL_GetTick();
 
   /* Set state and reset error code */
   hi2s->State       = HAL_I2S_STATE_BUSY_RX;
@@ -974,7 +965,7 @@ HAL_StatusTypeDef HAL_I2S_Receive(I2S_HandleTypeDef *hi2s, uint16_t *pData, uint
   while (hi2s->RxXferCount > 0UL)
   {
     /* Wait until RXP flag is set */
-    if (I2S_WaitFlagStateUntilTimeout(hi2s, I2S_FLAG_RXP, SET, tickstart, Timeout) != HAL_OK)
+    if (I2S_WaitFlagStateUntilTimeout(hi2s, I2S_FLAG_RXP, SET, Timeout) != HAL_OK)
     {
       /* Set the error code */
       SET_BIT(hi2s->ErrorCode, HAL_I2S_ERROR_TIMEOUT);
@@ -1035,7 +1026,7 @@ HAL_StatusTypeDef HAL_I2S_Receive(I2S_HandleTypeDef *hi2s, uint16_t *pData, uint
   * @retval HAL status
   */
 
-HAL_StatusTypeDef HAL_I2SEx_TransmitReceive(I2S_HandleTypeDef *hi2s, const uint16_t *pTxData, uint16_t *pRxData,
+HAL_StatusTypeDef HAL_I2SEx_TransmitReceive(I2S_HandleTypeDef *hi2s, uint16_t *pTxData, uint16_t *pRxData,
                                             uint16_t Size, uint32_t Timeout)
 {
   uint32_t tmp_TxXferCount;
@@ -1065,7 +1056,7 @@ HAL_StatusTypeDef HAL_I2SEx_TransmitReceive(I2S_HandleTypeDef *hi2s, const uint1
 
   hi2s->TxXferSize  = Size;
   hi2s->TxXferCount = Size;
-  hi2s->pTxBuffPtr  = (const uint16_t *)pTxData;
+  hi2s->pTxBuffPtr  = pTxData;
   hi2s->RxXferSize  = Size;
   hi2s->RxXferCount = Size;
   hi2s->pRxBuffPtr  = pRxData;
@@ -1094,7 +1085,7 @@ HAL_StatusTypeDef HAL_I2SEx_TransmitReceive(I2S_HandleTypeDef *hi2s, const uint1
       if ((hi2s->Init.DataFormat == I2S_DATAFORMAT_24B) || (hi2s->Init.DataFormat == I2S_DATAFORMAT_32B))
       {
         /* Transmit data in 32 Bit mode */
-        hi2s->Instance->TXDR = *((const uint32_t *)hi2s->pTxBuffPtr);
+        hi2s->Instance->TXDR = *((uint32_t *)hi2s->pTxBuffPtr);
         hi2s->pTxBuffPtr += 2;
         tmp_TxXferCount--;
       }
@@ -1102,9 +1093,9 @@ HAL_StatusTypeDef HAL_I2SEx_TransmitReceive(I2S_HandleTypeDef *hi2s, const uint1
       {
         /* Transmit data in 16 Bit mode */
 #if defined (__GNUC__)
-        *ptxdr_16bits = *((const uint16_t *)hi2s->pTxBuffPtr);
+        *ptxdr_16bits = *((uint16_t *)hi2s->pTxBuffPtr);
 #else
-        *((__IO uint16_t *)&hi2s->Instance->TXDR) = *((const uint16_t *)hi2s->pTxBuffPtr);
+        *((__IO uint16_t *)&hi2s->Instance->TXDR) = *((uint16_t *)hi2s->pTxBuffPtr);
 #endif /* __GNUC__ */
 
         hi2s->pTxBuffPtr++;
@@ -1184,7 +1175,7 @@ HAL_StatusTypeDef HAL_I2SEx_TransmitReceive(I2S_HandleTypeDef *hi2s, const uint1
   *         between Master and Slave(example: audio streaming).
   * @retval HAL status
   */
-HAL_StatusTypeDef HAL_I2S_Transmit_IT(I2S_HandleTypeDef *hi2s, const uint16_t *pData, uint16_t Size)
+HAL_StatusTypeDef HAL_I2S_Transmit_IT(I2S_HandleTypeDef *hi2s, uint16_t *pData, uint16_t Size)
 {
   if ((pData == NULL) || (Size == 0UL))
   {
@@ -1202,7 +1193,7 @@ HAL_StatusTypeDef HAL_I2S_Transmit_IT(I2S_HandleTypeDef *hi2s, const uint16_t *p
   /* Set state and reset error code */
   hi2s->State       = HAL_I2S_STATE_BUSY_TX;
   hi2s->ErrorCode   = HAL_I2S_ERROR_NONE;
-  hi2s->pTxBuffPtr  = (const uint16_t *)pData;
+  hi2s->pTxBuffPtr  = (uint16_t *)pData;
   hi2s->TxXferSize  = Size;
   hi2s->TxXferCount = Size;
 
@@ -1334,7 +1325,7 @@ HAL_StatusTypeDef HAL_I2S_Receive_IT(I2S_HandleTypeDef *hi2s, uint16_t *pData, u
   *         between Master and Slave(example: audio streaming).
   * @retval HAL status
   */
-HAL_StatusTypeDef HAL_I2SEx_TransmitReceive_IT(I2S_HandleTypeDef *hi2s, const uint16_t *pTxData, uint16_t *pRxData,
+HAL_StatusTypeDef HAL_I2SEx_TransmitReceive_IT(I2S_HandleTypeDef *hi2s, uint16_t *pTxData, uint16_t *pRxData,
                                                uint16_t Size)
 {
   if ((pTxData == NULL) || (pRxData == NULL) || (Size == 0U))
@@ -1350,8 +1341,8 @@ HAL_StatusTypeDef HAL_I2SEx_TransmitReceive_IT(I2S_HandleTypeDef *hi2s, const ui
   /* Process Locked */
   __HAL_LOCK(hi2s);
 
-  hi2s->pTxBuffPtr  = (const uint16_t *)pTxData;
-  hi2s->pRxBuffPtr  = pRxData;
+  hi2s->pTxBuffPtr = pTxData;
+  hi2s->pRxBuffPtr = pRxData;
 
   hi2s->TxXferSize  = Size;
   hi2s->TxXferCount = Size;
@@ -1412,7 +1403,7 @@ HAL_StatusTypeDef HAL_I2SEx_TransmitReceive_IT(I2S_HandleTypeDef *hi2s, const ui
   *         between Master and Slave(example: audio streaming).
   * @retval HAL status
   */
-HAL_StatusTypeDef HAL_I2S_Transmit_DMA(I2S_HandleTypeDef *hi2s, const uint16_t *pData, uint16_t Size)
+HAL_StatusTypeDef HAL_I2S_Transmit_DMA(I2S_HandleTypeDef *hi2s, uint16_t *pData, uint16_t Size)
 {
   HAL_StatusTypeDef errorcode = HAL_OK;
 
@@ -1432,7 +1423,7 @@ HAL_StatusTypeDef HAL_I2S_Transmit_DMA(I2S_HandleTypeDef *hi2s, const uint16_t *
   /* Set state and reset error code */
   hi2s->State       = HAL_I2S_STATE_BUSY_TX;
   hi2s->ErrorCode   = HAL_I2S_ERROR_NONE;
-  hi2s->pTxBuffPtr  = (const uint16_t *)pData;
+  hi2s->pTxBuffPtr  = pData;
   hi2s->TxXferSize  = Size;
   hi2s->TxXferCount = Size;
 
@@ -1546,7 +1537,7 @@ HAL_StatusTypeDef HAL_I2S_Receive_DMA(I2S_HandleTypeDef *hi2s, uint16_t *pData, 
     hi2s->State = HAL_I2S_STATE_READY;
     errorcode = HAL_ERROR;
     __HAL_UNLOCK(hi2s);
-    return errorcode;
+    return HAL_ERROR;
   }
 
   /* Check if the I2S Rx request is already enabled */
@@ -1585,7 +1576,7 @@ HAL_StatusTypeDef HAL_I2S_Receive_DMA(I2S_HandleTypeDef *hi2s, uint16_t *pData, 
   *         between Master and Slave(example: audio streaming).
   * @retval HAL status
   */
-HAL_StatusTypeDef HAL_I2SEx_TransmitReceive_DMA(I2S_HandleTypeDef *hi2s, const uint16_t *pTxData, uint16_t *pRxData,
+HAL_StatusTypeDef HAL_I2SEx_TransmitReceive_DMA(I2S_HandleTypeDef *hi2s, uint16_t *pTxData, uint16_t *pRxData,
                                                 uint16_t Size)
 {
   HAL_StatusTypeDef errorcode = HAL_OK;
@@ -1604,7 +1595,7 @@ HAL_StatusTypeDef HAL_I2SEx_TransmitReceive_DMA(I2S_HandleTypeDef *hi2s, const u
   /* Process Locked */
   __HAL_LOCK(hi2s);
 
-  hi2s->pTxBuffPtr = (const uint16_t *)pTxData;
+  hi2s->pTxBuffPtr = pTxData;
   hi2s->pRxBuffPtr = pRxData;
 
   hi2s->TxXferSize  = Size;
@@ -1655,7 +1646,7 @@ HAL_StatusTypeDef HAL_I2SEx_TransmitReceive_DMA(I2S_HandleTypeDef *hi2s, const u
     hi2s->State = HAL_I2S_STATE_READY;
     errorcode = HAL_ERROR;
     __HAL_UNLOCK(hi2s);
-    return errorcode;
+    return HAL_ERROR;
   }
 
   /* Check if the I2S Rx request is already enabled */
@@ -1833,107 +1824,6 @@ HAL_StatusTypeDef HAL_I2S_DMAStop(I2S_HandleTypeDef *hi2s)
   hi2s->State = HAL_I2S_STATE_READY;
 
   return errorcode;
-}
-
-/**
-  * @brief  Enable the SDO/SDI alternate functions inversion feature for the dedicated I2Sx.
-  *         Original SDI pin becomes SDO and original SDO pin becomes SDI (Also applicable
-  *         on half-duplex mode in case of single data line).
-  * @param  hi2s Pointer to a @ref I2S_HandleTypeDef structure that contains
-  *         the configuration information for I2S module.
-  * @retval HAL_ERROR When IO is locked, handle is NULL or wrong state.
-  * @retval HAL_OK IO Swap feature enabled successfully.
-  */
-HAL_StatusTypeDef HAL_I2S_EnableIOSwap(I2S_HandleTypeDef *hi2s)
-{
-  /* Check the I2S handle allocation */
-  if (hi2s == NULL)
-  {
-    return HAL_ERROR;
-  }
-
-  /* Check the global state */
-  if (hi2s->State != HAL_I2S_STATE_READY)
-  {
-    return HAL_ERROR;
-  }
-
-  /* Check for IOLock */
-  if (READ_BIT(hi2s->Instance->CR1, SPI_CR1_IOLOCK) == (SPI_CR1_IOLOCK))
-  {
-    return  HAL_ERROR;
-  }
-
-  /* Check if the I2S is already enabled */
-  if ((hi2s->Instance->CR1 & SPI_CR1_SPE) == SPI_CR1_SPE)
-  {
-    /* Disable I2S peripheral */
-    __HAL_I2S_DISABLE(hi2s);
-  }
-
-  /* Enable IO Swap feature */
-  SET_BIT(hi2s->Instance->CFG2, SPI_CFG2_IOSWP);
-
-  return HAL_OK;
-}
-
-/**
-  * @brief  Disable the SDO/SDI alternate functions inversion feature for the dedicated I2Sx.
-  *         Original SDI pin becomes SDI and original SDO pin becomes SDO (Also applicable
-  *         on half-duplex mode in case of single data line).
-  * @param  hi2s Pointer to a @ref I2S_HandleTypeDef structure that contains
-  *         the configuration information for I2S module.
-  * @retval HAL_ERROR When IO is locked, handle is NULL or wrong state.
-  * @retval HAL_OK IO Swap feature disabled successfully.
-  */
-HAL_StatusTypeDef HAL_I2S_DisableIOSwap(I2S_HandleTypeDef *hi2s)
-{
-  /* Check the I2S handle allocation */
-  if (hi2s == NULL)
-  {
-    return HAL_ERROR;
-  }
-
-  /* Check the global state */
-  if (hi2s->State != HAL_I2S_STATE_READY)
-  {
-    return HAL_ERROR;
-  }
-
-  /* Check for IOLock */
-  if (READ_BIT(hi2s->Instance->CR1, SPI_CR1_IOLOCK) == (SPI_CR1_IOLOCK))
-  {
-    return HAL_ERROR;
-  }
-
-  /* Check if the I2S is already enabled */
-  if ((hi2s->Instance->CR1 & SPI_CR1_SPE) == SPI_CR1_SPE)
-  {
-    /* Disable I2S peripheral */
-    __HAL_I2S_DISABLE(hi2s);
-  }
-
-  /* Disable the IO Swap feature */
-  CLEAR_BIT(hi2s->Instance->CFG2, SPI_CFG2_IOSWP);
-
-  return HAL_OK;
-}
-
-/**
-  * @brief  Retrieve the SDO/SDI alternate functions inversion feature status for the dedicated I2Sx.
-  * @param  hi2s Pointer to a @ref I2S_HandleTypeDef structure that contains
-  *         the configuration information for I2S module.
-  * @retval 1 when I2S IO swap feature is enabled, 0 otherwise, or when hi2s pointer is null.
-  */
-uint32_t HAL_I2S_IsEnabledIOSwap(const I2S_HandleTypeDef *hi2s)
-{
-  /* Check the I2S handle allocation */
-  if (hi2s == NULL)
-  {
-    return 0;
-  }
-
-  return ((READ_BIT(hi2s->Instance->CFG2, SPI_CFG2_IOSWP) == (SPI_CFG2_IOSWP)) ? 1UL : 0UL);
 }
 
 /**
@@ -2214,7 +2104,7 @@ __weak void HAL_I2S_ErrorCallback(I2S_HandleTypeDef *hi2s)
   *         the configuration information for I2S module
   * @retval HAL state
   */
-HAL_I2S_StateTypeDef HAL_I2S_GetState(const I2S_HandleTypeDef *hi2s)
+HAL_I2S_StateTypeDef HAL_I2S_GetState(I2S_HandleTypeDef *hi2s)
 {
   return hi2s->State;
 }
@@ -2225,7 +2115,7 @@ HAL_I2S_StateTypeDef HAL_I2S_GetState(const I2S_HandleTypeDef *hi2s)
   *         the configuration information for I2S module
   * @retval I2S Error Code
   */
-uint32_t HAL_I2S_GetError(const I2S_HandleTypeDef *hi2s)
+uint32_t HAL_I2S_GetError(I2S_HandleTypeDef *hi2s)
 {
   return hi2s->ErrorCode;
 }
@@ -2233,13 +2123,7 @@ uint32_t HAL_I2S_GetError(const I2S_HandleTypeDef *hi2s)
   * @}
   */
 
-/**
-  * @}
-  */
 
-/** @addtogroup I2S_Private_Functions
-  * @{
-  */
 /**
   * @brief  DMA I2S transmit process complete callback
   * @param  hdma pointer to a DMA_HandleTypeDef structure that contains
@@ -2343,21 +2227,6 @@ static void I2SEx_DMATxRxCplt(DMA_HandleTypeDef *hdma)
 {
   I2S_HandleTypeDef *hi2s = (I2S_HandleTypeDef *)((DMA_HandleTypeDef *)hdma)->Parent;
 
-  /* if DMA is configured in DMA_NORMAL Mode */
-  if (hdma->Init.Mode == DMA_NORMAL)
-  {
-    /* Disable Tx DMA Request */
-    CLEAR_BIT(hi2s->Instance->CFG1, SPI_CFG1_TXDMAEN);
-    hi2s->TxXferCount = (uint16_t) 0UL;
-
-    /* Disable Rx DMA Request */
-    CLEAR_BIT(hi2s->Instance->CFG1, SPI_CFG1_RXDMAEN);
-    hi2s->RxXferCount = (uint16_t)0UL;
-
-    /* Updated HAL State */
-    hi2s->State = HAL_I2S_STATE_READY;
-  }
-
   /* Call user TxRx complete callback */
 #if (USE_HAL_I2S_REGISTER_CALLBACKS == 1U)
   hi2s->TxRxCpltCallback(hi2s);
@@ -2424,9 +2293,9 @@ static void I2S_Transmit_16Bit_IT(I2S_HandleTypeDef *hi2s)
 #if defined (__GNUC__)
   __IO uint16_t *ptxdr_16bits = (__IO uint16_t *)(&(hi2s->Instance->TXDR));
 
-  *ptxdr_16bits = *((const uint16_t *)hi2s->pTxBuffPtr);
+  *ptxdr_16bits = *((uint16_t *)hi2s->pTxBuffPtr);
 #else
-  *((__IO uint16_t *)&hi2s->Instance->TXDR) = *((const uint16_t *)hi2s->pTxBuffPtr);
+  *((__IO uint16_t *)&hi2s->Instance->TXDR) = *((uint16_t *)hi2s->pTxBuffPtr);
 #endif /* __GNUC__ */
   hi2s->pTxBuffPtr++;
   hi2s->TxXferCount--;
@@ -2439,14 +2308,13 @@ static void I2S_Transmit_16Bit_IT(I2S_HandleTypeDef *hi2s)
     if ((hi2s->Init.Mode == I2S_MODE_SLAVE_TX) || (hi2s->Init.Mode == I2S_MODE_MASTER_TX))
     {
       hi2s->State = HAL_I2S_STATE_READY;
-
-      /* Call user Tx complete callback */
-#if (USE_HAL_I2S_REGISTER_CALLBACKS == 1UL)
-      hi2s->TxCpltCallback(hi2s);
-#else
-      HAL_I2S_TxCpltCallback(hi2s);
-#endif /* USE_HAL_I2S_REGISTER_CALLBACKS */
     }
+    /* Call user Tx complete callback */
+#if (USE_HAL_I2S_REGISTER_CALLBACKS == 1UL)
+    hi2s->TxCpltCallback(hi2s);
+#else
+    HAL_I2S_TxCpltCallback(hi2s);
+#endif /* USE_HAL_I2S_REGISTER_CALLBACKS */
   }
 }
 
@@ -2459,7 +2327,7 @@ static void I2S_Transmit_16Bit_IT(I2S_HandleTypeDef *hi2s)
 static void I2S_Transmit_32Bit_IT(I2S_HandleTypeDef *hi2s)
 {
   /* Transmit data */
-  hi2s->Instance->TXDR = *((const uint32_t *)hi2s->pTxBuffPtr);
+  hi2s->Instance->TXDR = *((uint32_t *)hi2s->pTxBuffPtr);
   hi2s->pTxBuffPtr += 2;
   hi2s->TxXferCount--;
 
@@ -2471,14 +2339,13 @@ static void I2S_Transmit_32Bit_IT(I2S_HandleTypeDef *hi2s)
     if ((hi2s->Init.Mode == I2S_MODE_SLAVE_TX) || (hi2s->Init.Mode == I2S_MODE_MASTER_TX))
     {
       hi2s->State = HAL_I2S_STATE_READY;
-
-      /* Call user Tx complete callback */
-#if (USE_HAL_I2S_REGISTER_CALLBACKS == 1UL)
-      hi2s->TxCpltCallback(hi2s);
-#else
-      HAL_I2S_TxCpltCallback(hi2s);
-#endif /* USE_HAL_I2S_REGISTER_CALLBACKS */
     }
+    /* Call user Tx complete callback */
+#if (USE_HAL_I2S_REGISTER_CALLBACKS == 1UL)
+    hi2s->TxCpltCallback(hi2s);
+#else
+    HAL_I2S_TxCpltCallback(hi2s);
+#endif /* USE_HAL_I2S_REGISTER_CALLBACKS */
   }
 }
 
@@ -2594,19 +2461,23 @@ static void I2S_Receive_32Bit_IT(I2S_HandleTypeDef *hi2s)
   *         the configuration information for I2S module
   * @param  Flag Flag checked
   * @param  State Value of the flag expected
-  * @param  Tickstart Tick start value
   * @param  Timeout Duration of the timeout
   * @retval HAL status
   */
 static HAL_StatusTypeDef I2S_WaitFlagStateUntilTimeout(I2S_HandleTypeDef *hi2s, uint32_t Flag, FlagStatus State,
-                                                       uint32_t Tickstart, uint32_t Timeout)
+                                                       uint32_t Timeout)
 {
+  uint32_t tickstart;
+
+  /* Get tick */
+  tickstart = HAL_GetTick();
+
   /* Wait until flag is set to status*/
   while (((__HAL_I2S_GET_FLAG(hi2s, Flag)) ? SET : RESET) != State)
   {
     if (Timeout != HAL_MAX_DELAY)
     {
-      if (((HAL_GetTick() - Tickstart) >= Timeout) || (Timeout == 0UL))
+      if (((HAL_GetTick() - tickstart) >= Timeout) || (Timeout == 0UL))
       {
         /* Set the I2S State ready */
         hi2s->State = HAL_I2S_STATE_READY;

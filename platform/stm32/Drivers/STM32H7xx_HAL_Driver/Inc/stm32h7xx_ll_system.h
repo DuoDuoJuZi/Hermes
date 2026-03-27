@@ -287,19 +287,10 @@ extern "C" {
   * @{
   */
 #if (STM32H7_DEV_ID == 0x450UL)
-#if defined(STM32H742xx) || defined(STM32H743xx) || defined(STM32H750xx) || defined(STM32H753xx)
 #define LL_SYSCFG_LQFP100_PACKAGE             0U
 #define LL_SYSCFG_TQFP144_PACKAGE             2U
 #define LL_SYSCFG_TQFP176_UFBGA176_PACKAGE    5U
 #define LL_SYSCFG_LQFP208_TFBGA240_PACKAGE    8U
-#else
-#define LL_SYSCFG_UFBGA169_LQFP176_PACKAGE    2U
-#define LL_SYSCFG_LQFP144_PACKAGE             3U
-#define LL_SYSCFG_LQFP176_PACKAGE             6U
-#define LL_SYSCFG_UFBGA176_PACKAGE            7U
-#define LL_SYSCFG_LQFP208_STM32H7x7_PACKAGE   9U
-#define LL_SYSCFG_LQFP208_STM32H7x5_PACKAGE   10U
-#endif
 #elif (STM32H7_DEV_ID == 0x483UL)
 #define LL_SYSCFG_VFQFPN68_INDUS_PACKAGE       0U
 #define LL_SYSCFG_TFBGA100_LQFP100_PACKAGE    1U
@@ -551,8 +542,8 @@ __STATIC_INLINE void LL_SYSCFG_DisableAnalogBooster(void)
   *         @arg @ref LL_SYSCFG_I2C_FASTMODEPLUS_I2C1
   *         @arg @ref LL_SYSCFG_I2C_FASTMODEPLUS_I2C2 (*)
   *         @arg @ref LL_SYSCFG_I2C_FASTMODEPLUS_I2C3
-  *         @arg @ref LL_SYSCFG_I2C_FASTMODEPLUS_I2C4 (*)
-  *         @arg @ref LL_SYSCFG_I2C_FASTMODEPLUS_I2C5 (*)
+  *         @arg @ref LL_SYSCFG_I2C_FASTMODEPLUS_I2C4(*)
+  *         @arg @ref LL_SYSCFG_I2C_FASTMODEPLUS_I2C5(*)
   *
   *         (*) value not defined in all devices
   * @retval None

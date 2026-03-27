@@ -24,15 +24,14 @@
 extern "C" {
 #endif
 
-
+#if defined(DTS)
 /* Includes ------------------------------------------------------------------*/
 #include "stm32h7xx_hal_def.h"
-
 
 /** @addtogroup STM32H7xx_HAL_Driver
   * @{
   */
-#if defined(DTS)
+
 /** @addtogroup DTS
   * @{
   */
@@ -96,36 +95,14 @@ typedef struct
 #if (USE_HAL_DTS_REGISTER_CALLBACKS == 1)
   void (* MspInitCallback)(struct __DTS_HandleTypeDef *hdts);         /*!< DTS Base Msp Init Callback                   */
   void (* MspDeInitCallback)(struct __DTS_HandleTypeDef *hdts);       /*!< DTS Base Msp DeInit Callback                 */
-  void (* EndCallback)(struct __DTS_HandleTypeDef *hdts);             /*!< End measure Callback                         */
-  void (* LowCallback)(struct __DTS_HandleTypeDef *hdts);             /*!< low threshold Callback                       */
-  void (* HighCallback)(struct __DTS_HandleTypeDef *hdts);            /*!< high threshold Callback                      */
-  void (* AsyncEndCallback)(struct __DTS_HandleTypeDef *hdts);        /*!< Asynchronous end of measure Callback         */
-  void (* AsyncLowCallback)(struct __DTS_HandleTypeDef *hdts);        /*!< Asynchronous low threshold Callback          */
-  void (* AsyncHighCallback)(struct __DTS_HandleTypeDef *hdts);       /*!< Asynchronous high threshold Callback         */
+  void (* DTS_EndCallback)(struct __DTS_HandleTypeDef *hdts);         /*!< End measure Callback                         */
+  void (* DTS_LowCallback)(struct __DTS_HandleTypeDef *hdts);         /*!< low threshold Callback                       */
+  void (* DTS_HighCallback)(struct __DTS_HandleTypeDef *hdts);        /*!< high threshold Callback                      */
+  void (* DTS_AsyncEndCallback)(struct __DTS_HandleTypeDef *hdts);    /*!< Asynchronous end of measure Callback         */
+  void (* DTS_AsyncLowCallback)(struct __DTS_HandleTypeDef *hdts);    /*!< Asynchronous low threshold Callback          */
+  void (* DTS_AsyncHighCallback(struct __DTS_HandleTypeDef *hdts);    /*!< Asynchronous high threshold Callback         */
 #endif /* USE_HAL_DTS_REGISTER_CALLBACKS */
 } DTS_HandleTypeDef;
-
-#if (USE_HAL_DTS_REGISTER_CALLBACKS == 1)
-/**
-  * @brief  DTS callback ID enumeration definition
-  */
-typedef enum
-{
-  HAL_DTS_MEAS_COMPLETE_CB_ID        = 0x00U, /*!< Measure complete callback ID */
-  HAL_DTS_ASYNC_MEAS_COMPLETE_CB_ID  = 0x01U, /*!< Asynchronous measure complete callback ID */
-  HAL_DTS_LOW_THRESHOLD_CB_ID        = 0x02U, /*!< Low threshold detection callback ID */
-  HAL_DTS_ASYNC_LOW_THRESHOLD_CB_ID  = 0x03U, /*!< Asynchronous low threshold detection callback ID */
-  HAL_DTS_HIGH_THRESHOLD_CB_ID       = 0x04U, /*!< High threshold detection callback ID */
-  HAL_DTS_ASYNC_HIGH_THRESHOLD_CB_ID = 0x05U, /*!< Asynchronous high threshold detection callback ID */
-  HAL_DTS_MSPINIT_CB_ID              = 0x06U, /*!< MSP init callback ID */
-  HAL_DTS_MSPDEINIT_CB_ID            = 0x07U  /*!< MSP de-init callback ID */
-} HAL_DTS_CallbackIDTypeDef;
-
-/**
-  * @brief  DTS callback pointers definition
-  */
-typedef void (*pDTS_CallbackTypeDef)(DTS_HandleTypeDef *hdts);
-#endif /* USE_HAL_DTS_REGISTER_CALLBACKS */
 
 /**
   * @}
@@ -235,15 +212,7 @@ typedef void (*pDTS_CallbackTypeDef)(DTS_HandleTypeDef *hdts);
   * @param  __HANDLE__ DTS handle.
   * @retval None
   */
-#if (USE_HAL_DTS_REGISTER_CALLBACKS == 1)
-#define __HAL_DTS_RESET_HANDLE_STATE(__HANDLE__) do{                                             \
-                                                      (__HANDLE__)->State = HAL_DTS_STATE_RESET; \
-                                                      (__HANDLE__)->MspInitCallback = NULL;      \
-                                                      (__HANDLE__)->MspDeInitCallback = NULL;    \
-                                                    } while(0)
-#else /* USE_HAL_DTS_REGISTER_CALLBACKS */
 #define __HAL_DTS_RESET_HANDLE_STATE(__HANDLE__)    ((__HANDLE__)->State = HAL_DTS_STATE_RESET)
-#endif /* USE_HAL_DTS_REGISTER_CALLBACKS */
 
 /**
   * @brief  Enable the specified DTS sensor
@@ -402,13 +371,6 @@ HAL_StatusTypeDef HAL_DTS_Init(DTS_HandleTypeDef *hdts);
 HAL_StatusTypeDef HAL_DTS_DeInit(DTS_HandleTypeDef *hdts);
 void              HAL_DTS_MspInit(DTS_HandleTypeDef *hdts);
 void              HAL_DTS_MspDeInit(DTS_HandleTypeDef *hdts);
-#if (USE_HAL_DTS_REGISTER_CALLBACKS == 1)
-HAL_StatusTypeDef HAL_DTS_RegisterCallback(DTS_HandleTypeDef        *hdts,
-                                           HAL_DTS_CallbackIDTypeDef CallbackID,
-                                           pDTS_CallbackTypeDef      pCallback);
-HAL_StatusTypeDef HAL_DTS_UnRegisterCallback(DTS_HandleTypeDef        *hdts,
-                                             HAL_DTS_CallbackIDTypeDef CallbackID);
-#endif /* USE_HAL_DTS_REGISTER_CALLBACKS */
 /**
   * @}
   */
@@ -423,7 +385,7 @@ HAL_StatusTypeDef HAL_DTS_GetTemperature(DTS_HandleTypeDef *hdts, int32_t *Tempe
 HAL_StatusTypeDef HAL_DTS_Start_IT(DTS_HandleTypeDef *hdts);
 HAL_StatusTypeDef HAL_DTS_Stop_IT(DTS_HandleTypeDef *hdts);
 void              HAL_DTS_IRQHandler(DTS_HandleTypeDef *hdts);
-HAL_DTS_StateTypeDef HAL_DTS_GetState(const DTS_HandleTypeDef *hdts);
+HAL_DTS_StateTypeDef HAL_DTS_GetState(DTS_HandleTypeDef *hdts);
 /* Callback in Interrupt mode */
 void              HAL_DTS_EndCallback(DTS_HandleTypeDef *hdts);
 void              HAL_DTS_LowCallback(DTS_HandleTypeDef *hdts);
@@ -431,9 +393,6 @@ void              HAL_DTS_HighCallback(DTS_HandleTypeDef *hdts);
 void              HAL_DTS_AsyncEndCallback(DTS_HandleTypeDef *hdts);
 void              HAL_DTS_AsyncLowCallback(DTS_HandleTypeDef *hdts);
 void              HAL_DTS_AsyncHighCallback(DTS_HandleTypeDef *hdts);
-/**
-  * @}
-  */
 /**
   * @}
   */
@@ -476,7 +435,7 @@ void              HAL_DTS_AsyncHighCallback(DTS_HandleTypeDef *hdts);
 
 #define IS_DTS_THRESHOLD(__THRESHOLD__)  ((__THRESHOLD__) <= 0xFFFFUL)
 
-#define IS_DTS_DIVIDER_RATIO_NUMBER(__NUMBER__) ((__NUMBER__) <= 127UL)
+#define IS_DTS_DIVIDER_RATIO_NUMBER(__NUMBER__) (((__NUMBER__) >= (2UL)) && ((__NUMBER__) <= (127UL)))
 
 #define IS_DTS_SAMPLINGTIME(__CYCLE__)  (((__CYCLE__) == DTS_SMP_TIME_1_CYCLE)  || \
                                              ((__CYCLE__) == DTS_SMP_TIME_2_CYCLE)    || \

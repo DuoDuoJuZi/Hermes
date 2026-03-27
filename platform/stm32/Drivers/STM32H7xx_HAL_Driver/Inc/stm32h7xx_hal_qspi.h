@@ -26,9 +26,6 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32h7xx_hal_def.h"
-#if defined (DLYB_QUADSPI)
-#include "stm32h7xx_ll_delayblock.h"
-#endif /* DLYB_QUADSPI */
 
 #if defined(QUADSPI)
 
@@ -385,17 +382,6 @@ typedef void (*pQSPI_CallbackTypeDef)(QSPI_HandleTypeDef *hqspi);
   * @}
   */
 
-#if defined(QUADSPI_CCR_FRCM)
-/** @defgroup QSPI_FRCMMode QSPI  Free Running Clock Mode
-  * @{
-  */
-#define QSPI_FRCM_MODE_NORMAL             0x00000000U                  /*!<Normal mode */
-#define QSPI_FRCM_FREE_RUNNING_CLOCK_MODE ((uint32_t)QUADSPI_CCR_FRCM) /*!<Free-running clock mode */
-/**
-  * @}
-  */
-
-#endif /* QUADSPI_CCR_FRCM */
 /** @defgroup QSPI_MatchMode QSPI Match Mode
   * @{
   */
@@ -631,19 +617,14 @@ HAL_StatusTypeDef     HAL_QSPI_UnRegisterCallback   (QSPI_HandleTypeDef *hqspi, 
   * @{
   */
 /* Peripheral Control and State functions  ************************************/
-HAL_QSPI_StateTypeDef HAL_QSPI_GetState        (const QSPI_HandleTypeDef *hqspi);
-uint32_t              HAL_QSPI_GetError        (const QSPI_HandleTypeDef *hqspi);
+HAL_QSPI_StateTypeDef HAL_QSPI_GetState        (QSPI_HandleTypeDef *hqspi);
+uint32_t              HAL_QSPI_GetError        (QSPI_HandleTypeDef *hqspi);
 HAL_StatusTypeDef     HAL_QSPI_Abort           (QSPI_HandleTypeDef *hqspi);
 HAL_StatusTypeDef     HAL_QSPI_Abort_IT        (QSPI_HandleTypeDef *hqspi);
 void                  HAL_QSPI_SetTimeout      (QSPI_HandleTypeDef *hqspi, uint32_t Timeout);
 HAL_StatusTypeDef     HAL_QSPI_SetFifoThreshold(QSPI_HandleTypeDef *hqspi, uint32_t Threshold);
-uint32_t              HAL_QSPI_GetFifoThreshold(const QSPI_HandleTypeDef *hqspi);
+uint32_t              HAL_QSPI_GetFifoThreshold(QSPI_HandleTypeDef *hqspi);
 HAL_StatusTypeDef     HAL_QSPI_SetFlashID      (QSPI_HandleTypeDef *hqspi, uint32_t FlashID);
-#if defined(QUADSPI_CCR_FRCM)
-HAL_StatusTypeDef     HAL_QSPI_EnableFreeRunningClockMode(QSPI_HandleTypeDef *hqspi);
-HAL_StatusTypeDef     HAL_QSPI_DisableFreeRunningClockMode(QSPI_HandleTypeDef *hqspi);
-uint32_t              HAL_QSPI_IsEnabledFreeRunningClockMode(QSPI_HandleTypeDef *hqspi);
-#endif /* QUADSPI_CCR_FRCM */
 /**
   * @}
   */
@@ -741,11 +722,6 @@ uint32_t              HAL_QSPI_IsEnabledFreeRunningClockMode(QSPI_HandleTypeDef 
                                             ((TCEN) == QSPI_TIMEOUT_COUNTER_ENABLE))
 
 #define IS_QSPI_TIMEOUT_PERIOD(PERIOD)     ((PERIOD) <= 0xFFFFU)
-#if defined(QUADSPI_CCR_FRCM)
-
-#define IS_QSPI_FRCM_MODE(MODE)            (((MODE) == QSPI_FRCM_MODE_NORMAL) || \
-                                            ((MODE) == QSPI_FRCM_FREE_RUNNING_CLOCK_MODE))
-#endif /* QUADSPI_CCR_FRCM */
 /**
 * @}
 */

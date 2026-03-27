@@ -305,13 +305,12 @@ typedef struct
 /* USB Device handle structure */
 typedef struct
 {
+  uint32_t status;
   uint32_t total_length;
   uint32_t rem_length;
-  uint32_t bInterval;
-  uint16_t maxpacket;
-  uint8_t status;
-  uint8_t is_used;
-  uint8_t *pbuffer;
+  uint32_t maxpacket;
+  uint16_t is_used;
+  uint16_t bInterval;
 } USBD_EndpointTypeDef;
 
 #ifdef USE_USBD_COMPOSITE
@@ -391,14 +390,7 @@ typedef struct _USBD_HandleTypeDef
 #ifdef USE_USBD_COMPOSITE
   USBD_CompositeElementTypeDef tclasslist[USBD_MAX_SUPPORTED_CLASS];
 #endif /* USE_USBD_COMPOSITE */
-#if (USBD_USER_REGISTER_CALLBACK == 1U)
-  void (* DevStateCallback)(uint8_t dev_state, uint8_t cfgidx);                    /*!< User Notification callback      */
-#endif /* USBD_USER_REGISTER_CALLBACK */
 } USBD_HandleTypeDef;
-
-#if (USBD_USER_REGISTER_CALLBACK == 1U)
-typedef void (*USBD_DevStateCallbackTypeDef)(uint8_t dev_state, uint8_t cfgidx);   /*!< pointer to User callback function  */
-#endif /* USBD_USER_REGISTER_CALLBACK */
 
 /* USB Device endpoint direction */
 typedef enum
@@ -424,9 +416,7 @@ typedef enum
   */
 __STATIC_INLINE uint16_t SWAPBYTE(uint8_t *addr)
 {
-  uint16_t _SwapVal;
-  uint16_t _Byte1;
-  uint16_t _Byte2;
+  uint16_t _SwapVal, _Byte1, _Byte2;
   uint8_t *_pbuff = addr;
 
   _Byte1 = *(uint8_t *)_pbuff;

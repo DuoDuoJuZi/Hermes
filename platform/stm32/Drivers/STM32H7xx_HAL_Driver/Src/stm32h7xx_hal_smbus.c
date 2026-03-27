@@ -584,9 +584,6 @@ HAL_StatusTypeDef HAL_SMBUS_ConfigDigitalFilter(SMBUS_HandleTypeDef *hsmbus, uin
 /**
   * @brief  Register a User SMBUS Callback
   *         To be used instead of the weak predefined callback
-  * @note   The HAL_SMBUS_RegisterCallback() may be called before HAL_SMBUS_Init() in
-  *         HAL_SMBUS_STATE_RESET to register callbacks for HAL_SMBUS_MSPINIT_CB_ID and
-  *         HAL_SMBUS_MSPDEINIT_CB_ID.
   * @param  hsmbus Pointer to a SMBUS_HandleTypeDef structure that contains
   *                the configuration information for the specified SMBUS.
   * @param  CallbackID ID of the callback to be registered
@@ -615,6 +612,9 @@ HAL_StatusTypeDef HAL_SMBUS_RegisterCallback(SMBUS_HandleTypeDef *hsmbus,
 
     return HAL_ERROR;
   }
+
+  /* Process locked */
+  __HAL_LOCK(hsmbus);
 
   if (HAL_SMBUS_STATE_READY == hsmbus->State)
   {
@@ -691,15 +691,14 @@ HAL_StatusTypeDef HAL_SMBUS_RegisterCallback(SMBUS_HandleTypeDef *hsmbus,
     status =  HAL_ERROR;
   }
 
+  /* Release Lock */
+  __HAL_UNLOCK(hsmbus);
   return status;
 }
 
 /**
   * @brief  Unregister an SMBUS Callback
   *         SMBUS callback is redirected to the weak predefined callback
-  * @note   The HAL_SMBUS_UnRegisterCallback() may be called before HAL_SMBUS_Init() in
-  *         HAL_SMBUS_STATE_RESET to un-register callbacks for HAL_SMBUS_MSPINIT_CB_ID and
-  *         HAL_SMBUS_MSPDEINIT_CB_ID
   * @param  hsmbus Pointer to a SMBUS_HandleTypeDef structure that contains
   *                the configuration information for the specified SMBUS.
   * @param  CallbackID ID of the callback to be unregistered
@@ -719,6 +718,9 @@ HAL_StatusTypeDef HAL_SMBUS_UnRegisterCallback(SMBUS_HandleTypeDef *hsmbus,
                                                HAL_SMBUS_CallbackIDTypeDef CallbackID)
 {
   HAL_StatusTypeDef status = HAL_OK;
+
+  /* Process locked */
+  __HAL_LOCK(hsmbus);
 
   if (HAL_SMBUS_STATE_READY == hsmbus->State)
   {
@@ -795,6 +797,8 @@ HAL_StatusTypeDef HAL_SMBUS_UnRegisterCallback(SMBUS_HandleTypeDef *hsmbus,
     status =  HAL_ERROR;
   }
 
+  /* Release Lock */
+  __HAL_UNLOCK(hsmbus);
   return status;
 }
 
@@ -818,6 +822,8 @@ HAL_StatusTypeDef HAL_SMBUS_RegisterAddrCallback(SMBUS_HandleTypeDef *hsmbus,
 
     return HAL_ERROR;
   }
+  /* Process locked */
+  __HAL_LOCK(hsmbus);
 
   if (HAL_SMBUS_STATE_READY == hsmbus->State)
   {
@@ -832,6 +838,8 @@ HAL_StatusTypeDef HAL_SMBUS_RegisterAddrCallback(SMBUS_HandleTypeDef *hsmbus,
     status =  HAL_ERROR;
   }
 
+  /* Release Lock */
+  __HAL_UNLOCK(hsmbus);
   return status;
 }
 
@@ -846,6 +854,9 @@ HAL_StatusTypeDef HAL_SMBUS_UnRegisterAddrCallback(SMBUS_HandleTypeDef *hsmbus)
 {
   HAL_StatusTypeDef status = HAL_OK;
 
+  /* Process locked */
+  __HAL_LOCK(hsmbus);
+
   if (HAL_SMBUS_STATE_READY == hsmbus->State)
   {
     hsmbus->AddrCallback = HAL_SMBUS_AddrCallback; /* Legacy weak AddrCallback  */
@@ -859,6 +870,8 @@ HAL_StatusTypeDef HAL_SMBUS_UnRegisterAddrCallback(SMBUS_HandleTypeDef *hsmbus)
     status =  HAL_ERROR;
   }
 
+  /* Release Lock */
+  __HAL_UNLOCK(hsmbus);
   return status;
 }
 
@@ -926,7 +939,6 @@ HAL_StatusTypeDef HAL_SMBUS_Master_Transmit_IT(SMBUS_HandleTypeDef *hsmbus, uint
                                                uint8_t *pData, uint16_t Size, uint32_t XferOptions)
 {
   uint32_t tmp;
-  uint32_t sizetoxfer;
 
   /* Check the parameters */
   assert_param(IS_SMBUS_TRANSFER_OPTIONS_REQUEST(XferOptions));
@@ -959,35 +971,11 @@ HAL_StatusTypeDef HAL_SMBUS_Master_Transmit_IT(SMBUS_HandleTypeDef *hsmbus, uint
       hsmbus->XferSize = Size;
     }
 
-    sizetoxfer = hsmbus->XferSize;
-    if ((sizetoxfer > 0U) && ((XferOptions == SMBUS_FIRST_FRAME) ||
-                              (XferOptions == SMBUS_FIRST_AND_LAST_FRAME_NO_PEC) ||
-                              (XferOptions == SMBUS_FIRST_FRAME_WITH_PEC) ||
-                              (XferOptions == SMBUS_FIRST_AND_LAST_FRAME_WITH_PEC)))
-    {
-      if (hsmbus->pBuffPtr != NULL)
-      {
-        /* Preload TX register */
-        /* Write data to TXDR */
-        hsmbus->Instance->TXDR = *hsmbus->pBuffPtr;
-
-        /* Increment Buffer pointer */
-        hsmbus->pBuffPtr++;
-
-        hsmbus->XferCount--;
-        hsmbus->XferSize--;
-      }
-      else
-      {
-        return HAL_ERROR;
-      }
-    }
-
     /* Send Slave Address */
     /* Set NBYTES to write and reload if size > MAX_NBYTE_SIZE and generate RESTART */
-    if ((sizetoxfer < hsmbus->XferCount) && (sizetoxfer == MAX_NBYTE_SIZE))
+    if ((hsmbus->XferSize < hsmbus->XferCount) && (hsmbus->XferSize == MAX_NBYTE_SIZE))
     {
-      SMBUS_TransferConfig(hsmbus, DevAddress, (uint8_t)sizetoxfer,
+      SMBUS_TransferConfig(hsmbus, DevAddress, (uint8_t)hsmbus->XferSize,
                            SMBUS_RELOAD_MODE | (hsmbus->XferOptions & SMBUS_SENDPEC_MODE),
                            SMBUS_GENERATE_START_WRITE);
     }
@@ -1002,7 +990,7 @@ HAL_StatusTypeDef HAL_SMBUS_Master_Transmit_IT(SMBUS_HandleTypeDef *hsmbus, uint
       if ((hsmbus->PreviousState == HAL_SMBUS_STATE_MASTER_BUSY_TX) && \
           (IS_SMBUS_TRANSFER_OTHER_OPTIONS_REQUEST(tmp) == 0))
       {
-        SMBUS_TransferConfig(hsmbus, DevAddress, (uint8_t)sizetoxfer, hsmbus->XferOptions,
+        SMBUS_TransferConfig(hsmbus, DevAddress, (uint8_t)hsmbus->XferSize, hsmbus->XferOptions,
                              SMBUS_NO_STARTSTOP);
       }
       /* Else transfer direction change, so generate Restart with new transfer direction */
@@ -1012,7 +1000,7 @@ HAL_StatusTypeDef HAL_SMBUS_Master_Transmit_IT(SMBUS_HandleTypeDef *hsmbus, uint
         SMBUS_ConvertOtherXferOptions(hsmbus);
 
         /* Handle Transfer */
-        SMBUS_TransferConfig(hsmbus, DevAddress, (uint8_t)sizetoxfer,
+        SMBUS_TransferConfig(hsmbus, DevAddress, (uint8_t)hsmbus->XferSize,
                              hsmbus->XferOptions,
                              SMBUS_GENERATE_START_WRITE);
       }
@@ -1021,15 +1009,8 @@ HAL_StatusTypeDef HAL_SMBUS_Master_Transmit_IT(SMBUS_HandleTypeDef *hsmbus, uint
       /* PEC byte is automatically sent by HW block, no need to manage it in Transmit process */
       if (SMBUS_GET_PEC_MODE(hsmbus) != 0UL)
       {
-        if (hsmbus->XferSize > 0U)
-        {
-          hsmbus->XferSize--;
-          hsmbus->XferCount--;
-        }
-        else
-        {
-          return HAL_ERROR;
-        }
+        hsmbus->XferSize--;
+        hsmbus->XferCount--;
       }
     }
 
@@ -1543,50 +1524,55 @@ HAL_StatusTypeDef HAL_SMBUS_IsDeviceReady(SMBUS_HandleTypeDef *hsmbus, uint16_t 
         /* Wait until STOPF flag is reset */
         if (SMBUS_WaitOnFlagUntilTimeout(hsmbus, SMBUS_FLAG_STOPF, RESET, Timeout) != HAL_OK)
         {
-          /* A non acknowledge appear during STOP Flag waiting process, a new trial must be performed */
-          /* Clear STOP Flag */
-          __HAL_SMBUS_CLEAR_FLAG(hsmbus, SMBUS_FLAG_STOPF);
-
-          /* Reset the error code for next trial */
-          hsmbus->ErrorCode = HAL_SMBUS_ERROR_NONE;
+          return HAL_ERROR;
         }
-        else
-        {
-          /* A acknowledge appear during STOP Flag waiting process, this mean that device respond to its address */
 
-          /* Clear STOP Flag */
-          __HAL_SMBUS_CLEAR_FLAG(hsmbus, SMBUS_FLAG_STOPF);
+        /* Clear STOP Flag */
+        __HAL_SMBUS_CLEAR_FLAG(hsmbus, SMBUS_FLAG_STOPF);
 
-          /* Device is ready */
-          hsmbus->State = HAL_SMBUS_STATE_READY;
+        /* Device is ready */
+        hsmbus->State = HAL_SMBUS_STATE_READY;
 
-          /* Process Unlocked */
-          __HAL_UNLOCK(hsmbus);
+        /* Process Unlocked */
+        __HAL_UNLOCK(hsmbus);
 
-          return HAL_OK;
-        }
+        return HAL_OK;
       }
       else
       {
-        /* A non acknowledge is detected, this mean that device not respond to its address,
-           a new trial must be performed */
+        /* Wait until STOPF flag is reset */
+        if (SMBUS_WaitOnFlagUntilTimeout(hsmbus, SMBUS_FLAG_STOPF, RESET, Timeout) != HAL_OK)
+        {
+          return HAL_ERROR;
+        }
 
         /* Clear NACK Flag */
         __HAL_SMBUS_CLEAR_FLAG(hsmbus, SMBUS_FLAG_AF);
 
+        /* Clear STOP Flag, auto generated with autoend*/
+        __HAL_SMBUS_CLEAR_FLAG(hsmbus, SMBUS_FLAG_STOPF);
+      }
+
+      /* Check if the maximum allowed number of trials has been reached */
+      if (SMBUS_Trials == Trials)
+      {
+        /* Generate Stop */
+        hsmbus->Instance->CR2 |= I2C_CR2_STOP;
+
         /* Wait until STOPF flag is reset */
-        if (SMBUS_WaitOnFlagUntilTimeout(hsmbus, SMBUS_FLAG_STOPF, RESET, Timeout) == HAL_OK)
+        if (SMBUS_WaitOnFlagUntilTimeout(hsmbus, SMBUS_FLAG_STOPF, RESET, Timeout) != HAL_OK)
         {
-          /* Clear STOP Flag, auto generated with autoend*/
-          __HAL_SMBUS_CLEAR_FLAG(hsmbus, SMBUS_FLAG_STOPF);
+          return HAL_ERROR;
         }
+
+        /* Clear STOP Flag */
+        __HAL_SMBUS_CLEAR_FLAG(hsmbus, SMBUS_FLAG_STOPF);
       }
 
       /* Increment Trials */
       SMBUS_Trials++;
     } while (SMBUS_Trials < Trials);
 
-    /* Update SMBUS state */
     hsmbus->State = HAL_SMBUS_STATE_READY;
 
     /* Update SMBUS error code */
@@ -1840,7 +1826,7 @@ __weak void HAL_SMBUS_ErrorCallback(SMBUS_HandleTypeDef *hsmbus)
   *                the configuration information for the specified SMBUS.
   * @retval HAL state
   */
-uint32_t HAL_SMBUS_GetState(const SMBUS_HandleTypeDef *hsmbus)
+uint32_t HAL_SMBUS_GetState(SMBUS_HandleTypeDef *hsmbus)
 {
   /* Return SMBUS handle state */
   return hsmbus->State;
@@ -1852,7 +1838,7 @@ uint32_t HAL_SMBUS_GetState(const SMBUS_HandleTypeDef *hsmbus)
   *              the configuration information for the specified SMBUS.
   * @retval SMBUS Error Code
   */
-uint32_t HAL_SMBUS_GetError(const SMBUS_HandleTypeDef *hsmbus)
+uint32_t HAL_SMBUS_GetError(SMBUS_HandleTypeDef *hsmbus)
 {
   return hsmbus->ErrorCode;
 }
@@ -1954,7 +1940,7 @@ static HAL_StatusTypeDef SMBUS_Master_ISR(SMBUS_HandleTypeDef *hsmbus, uint32_t 
         /* Increment Buffer pointer */
         hsmbus->pBuffPtr++;
 
-        if (hsmbus->XferSize > 0U)
+        if ((hsmbus->XferSize > 0U))
         {
           hsmbus->XferSize--;
           hsmbus->XferCount--;
@@ -2382,7 +2368,7 @@ static HAL_StatusTypeDef SMBUS_Slave_ISR(SMBUS_HandleTypeDef *hsmbus, uint32_t S
         /* Increment Buffer pointer */
         hsmbus->pBuffPtr++;
 
-        if (hsmbus->XferSize > 0U)
+        if ((hsmbus->XferSize > 0U))
         {
           hsmbus->XferSize--;
           hsmbus->XferCount--;
@@ -2614,11 +2600,8 @@ static void SMBUS_ITErrorHandler(SMBUS_HandleTypeDef *hsmbus)
     __HAL_SMBUS_CLEAR_FLAG(hsmbus, SMBUS_FLAG_PECERR);
   }
 
-  if (hsmbus->ErrorCode != HAL_SMBUS_ERROR_NONE)
-  {
-    /* Flush TX register */
-    SMBUS_Flush_TXDR(hsmbus);
-  }
+  /* Flush TX register */
+  SMBUS_Flush_TXDR(hsmbus);
 
   /* Store current volatile hsmbus->ErrorCode, misra rule */
   tmperror = hsmbus->ErrorCode;

@@ -82,15 +82,15 @@
       and a pointer to the user callback function.
 
       Use function HAL_SDRAM_UnRegisterCallback() to reset a callback to the default
-      weak (overridden) function. It allows to reset following callbacks:
+      weak (surcharged) function. It allows to reset following callbacks:
         (+) MspInitCallback    : SDRAM MspInit.
         (+) MspDeInitCallback  : SDRAM MspDeInit.
       This function) takes as parameters the HAL peripheral handle and the Callback ID.
 
       By default, after the HAL_SDRAM_Init and if the state is HAL_SDRAM_STATE_RESET
-      all callbacks are reset to the corresponding legacy weak (overridden) functions.
+      all callbacks are reset to the corresponding legacy weak (surcharged) functions.
       Exception done for MspInit and MspDeInit callbacks that are respectively
-      reset to the legacy weak (overridden) functions in the HAL_SDRAM_Init
+      reset to the legacy weak (surcharged) functions in the HAL_SDRAM_Init
       and  HAL_SDRAM_DeInit only when these callbacks are null (not registered beforehand).
       If not, MspInit or MspDeInit are not null, the HAL_SDRAM_Init and HAL_SDRAM_DeInit
       keep and use the user MspInit/MspDeInit callbacks (registered beforehand)
@@ -105,7 +105,7 @@
 
       When The compilation define USE_HAL_SDRAM_REGISTER_CALLBACKS is set to 0 or
       not defined, the callback registering feature is not available
-      and weak (overridden) callbacks are used.
+      and weak (surcharged) callbacks are used.
 
   @endverbatim
   ******************************************************************************
@@ -131,15 +131,9 @@
 /* Private macro -------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
 /* Private function prototypes -----------------------------------------------*/
-/** @addtogroup SDRAM_Private_Functions SDRAM Private Functions
-  * @{
-  */
 static void SDRAM_DMACplt(MDMA_HandleTypeDef *hmdma);
 static void SDRAM_DMACpltProt(MDMA_HandleTypeDef *hmdma);
 static void SDRAM_DMAError(MDMA_HandleTypeDef *hmdma);
-/**
-  * @}
-  */
 
 /* Exported functions --------------------------------------------------------*/
 /** @defgroup SDRAM_Exported_Functions SDRAM Exported Functions
@@ -793,7 +787,7 @@ HAL_StatusTypeDef HAL_SDRAM_Write_DMA(SDRAM_HandleTypeDef *hsdram, uint32_t *pAd
 #if (USE_HAL_SDRAM_REGISTER_CALLBACKS == 1)
 /**
   * @brief  Register a User SDRAM Callback
-  *         To be used to override the weak predefined callback
+  *         To be used instead of the weak (surcharged) predefined callback
   * @param hsdram : SDRAM handle
   * @param CallbackId : ID of the callback to be registered
   *        This parameter can be one of the following values:
@@ -813,6 +807,9 @@ HAL_StatusTypeDef HAL_SDRAM_RegisterCallback(SDRAM_HandleTypeDef *hsdram, HAL_SD
   {
     return HAL_ERROR;
   }
+
+  /* Process locked */
+  __HAL_LOCK(hsdram);
 
   state = hsdram->State;
   if ((state == HAL_SDRAM_STATE_READY) || (state == HAL_SDRAM_STATE_WRITE_PROTECTED))
@@ -856,12 +853,14 @@ HAL_StatusTypeDef HAL_SDRAM_RegisterCallback(SDRAM_HandleTypeDef *hsdram, HAL_SD
     status =  HAL_ERROR;
   }
 
+  /* Release Lock */
+  __HAL_UNLOCK(hsdram);
   return status;
 }
 
 /**
   * @brief  Unregister a User SDRAM Callback
-  *         SDRAM Callback is redirected to the weak predefined callback
+  *         SDRAM Callback is redirected to the weak (surcharged) predefined callback
   * @param hsdram : SDRAM handle
   * @param CallbackId : ID of the callback to be unregistered
   *        This parameter can be one of the following values:
@@ -876,6 +875,9 @@ HAL_StatusTypeDef HAL_SDRAM_UnRegisterCallback(SDRAM_HandleTypeDef *hsdram, HAL_
 {
   HAL_StatusTypeDef status = HAL_OK;
   HAL_SDRAM_StateTypeDef state;
+
+  /* Process locked */
+  __HAL_LOCK(hsdram);
 
   state = hsdram->State;
   if ((state == HAL_SDRAM_STATE_READY) || (state == HAL_SDRAM_STATE_WRITE_PROTECTED))
@@ -925,12 +927,14 @@ HAL_StatusTypeDef HAL_SDRAM_UnRegisterCallback(SDRAM_HandleTypeDef *hsdram, HAL_
     status =  HAL_ERROR;
   }
 
+  /* Release Lock */
+  __HAL_UNLOCK(hsdram);
   return status;
 }
 
 /**
   * @brief  Register a User SDRAM Callback for DMA transfers
-  *         To be used to override the weak predefined callback
+  *         To be used instead of the weak (surcharged) predefined callback
   * @param hsdram : SDRAM handle
   * @param CallbackId : ID of the callback to be registered
   *        This parameter can be one of the following values:
@@ -1214,7 +1218,7 @@ uint32_t HAL_SDRAM_GetModeStatus(SDRAM_HandleTypeDef *hsdram)
   *                the configuration information for SDRAM module.
   * @retval HAL state
   */
-HAL_SDRAM_StateTypeDef HAL_SDRAM_GetState(const SDRAM_HandleTypeDef *hsdram)
+HAL_SDRAM_StateTypeDef HAL_SDRAM_GetState(SDRAM_HandleTypeDef *hsdram)
 {
   return hsdram->State;
 }
@@ -1227,9 +1231,6 @@ HAL_SDRAM_StateTypeDef HAL_SDRAM_GetState(const SDRAM_HandleTypeDef *hsdram)
   * @}
   */
 
-/** @addtogroup SDRAM_Private_Functions SDRAM Private Functions
-  * @{
-  */
 /**
   * @brief  MDMA SDRAM process complete callback.
   * @param  hmdma : MDMA handle
@@ -1237,7 +1238,6 @@ HAL_SDRAM_StateTypeDef HAL_SDRAM_GetState(const SDRAM_HandleTypeDef *hsdram)
   */
 static void SDRAM_DMACplt(MDMA_HandleTypeDef *hmdma)
 {
-  /* Derogation MISRAC2012-Rule-11.5 */
   SDRAM_HandleTypeDef *hsdram = (SDRAM_HandleTypeDef *)(hmdma->Parent);
 
   /* Disable the MDMA channel */
@@ -1260,7 +1260,6 @@ static void SDRAM_DMACplt(MDMA_HandleTypeDef *hmdma)
   */
 static void SDRAM_DMACpltProt(MDMA_HandleTypeDef *hmdma)
 {
-  /* Derogation MISRAC2012-Rule-11.5 */
   SDRAM_HandleTypeDef *hsdram = (SDRAM_HandleTypeDef *)(hmdma->Parent);
 
   /* Disable the MDMA channel */
@@ -1283,7 +1282,6 @@ static void SDRAM_DMACpltProt(MDMA_HandleTypeDef *hmdma)
   */
 static void SDRAM_DMAError(MDMA_HandleTypeDef *hmdma)
 {
-  /* Derogation MISRAC2012-Rule-11.5 */
   SDRAM_HandleTypeDef *hsdram = (SDRAM_HandleTypeDef *)(hmdma->Parent);
 
   /* Disable the MDMA channel */
@@ -1299,9 +1297,6 @@ static void SDRAM_DMAError(MDMA_HandleTypeDef *hmdma)
 #endif /* USE_HAL_SDRAM_REGISTER_CALLBACKS */
 }
 
-/**
-  * @}
-  */
 /**
   * @}
   */

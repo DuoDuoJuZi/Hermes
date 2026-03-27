@@ -65,7 +65,7 @@ USBD_DescriptorsTypeDef Class_Desc =
   USBD_Class_ConfigStrDescriptor,
   USBD_Class_InterfaceStrDescriptor,
 #if (USBD_CLASS_USER_STRING_DESC == 1)
-  USBD_Class_UserStrDescriptor,
+  USBD_CLASS_UserStrDescriptor,
 #endif /* USB_CLASS_USER_STRING_DESC */
 
 #if ((USBD_LPM_ENABLED == 1) || (USBD_CLASS_BOS_ENABLED == 1))
@@ -374,9 +374,7 @@ uint8_t *USBD_Class_InterfaceStrDescriptor(USBD_SpeedTypeDef speed, uint16_t *le
   */
 static void Get_SerialNum(void)
 {
-  uint32_t deviceserial0;
-  uint32_t deviceserial1;
-  uint32_t deviceserial2;
+  uint32_t deviceserial0, deviceserial1, deviceserial2;
 
   deviceserial0 = *(uint32_t *)DEVICE_ID1;
   deviceserial1 = *(uint32_t *)DEVICE_ID2;

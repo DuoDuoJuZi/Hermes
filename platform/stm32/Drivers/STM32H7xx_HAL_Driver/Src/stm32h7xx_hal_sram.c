@@ -83,15 +83,15 @@
       and a pointer to the user callback function.
 
       Use function HAL_SRAM_UnRegisterCallback() to reset a callback to the default
-      weak (overridden) function. It allows to reset following callbacks:
+      weak (surcharged) function. It allows to reset following callbacks:
         (+) MspInitCallback    : SRAM MspInit.
         (+) MspDeInitCallback  : SRAM MspDeInit.
       This function) takes as parameters the HAL peripheral handle and the Callback ID.
 
       By default, after the HAL_SRAM_Init and if the state is HAL_SRAM_STATE_RESET
-      all callbacks are reset to the corresponding legacy weak (overridden) functions.
+      all callbacks are reset to the corresponding legacy weak (surcharged) functions.
       Exception done for MspInit and MspDeInit callbacks that are respectively
-      reset to the legacy weak (overridden) functions in the HAL_SRAM_Init
+      reset to the legacy weak (surcharged) functions in the HAL_SRAM_Init
       and  HAL_SRAM_DeInit only when these callbacks are null (not registered beforehand).
       If not, MspInit or MspDeInit are not null, the HAL_SRAM_Init and HAL_SRAM_DeInit
       keep and use the user MspInit/MspDeInit callbacks (registered beforehand)
@@ -106,7 +106,7 @@
 
       When The compilation define USE_HAL_SRAM_REGISTER_CALLBACKS is set to 0 or
       not defined, the callback registering feature is not available
-      and weak (overridden) callbacks are used.
+      and weak (surcharged) callbacks are used.
 
   @endverbatim
   ******************************************************************************
@@ -132,15 +132,9 @@
 /* Private macro -------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
 /* Private function prototypes -----------------------------------------------*/
-/** @addtogroup SRAM_Private_Functions SRAM Private Functions
-  * @{
-  */
 static void SRAM_DMACplt(MDMA_HandleTypeDef *hmdma);
 static void SRAM_DMACpltProt(MDMA_HandleTypeDef *hmdma);
 static void SRAM_DMAError(MDMA_HandleTypeDef *hmdma);
-/**
-  * @}
-  */
 
 /* Exported functions --------------------------------------------------------*/
 
@@ -739,7 +733,7 @@ HAL_StatusTypeDef HAL_SRAM_Write_DMA(SRAM_HandleTypeDef *hsram, uint32_t *pAddre
 #if (USE_HAL_SRAM_REGISTER_CALLBACKS == 1)
 /**
   * @brief  Register a User SRAM Callback
-  *         To be used to override the weak predefined callback
+  *         To be used instead of the weak (surcharged) predefined callback
   * @param hsram : SRAM handle
   * @param CallbackId : ID of the callback to be registered
   *        This parameter can be one of the following values:
@@ -758,6 +752,9 @@ HAL_StatusTypeDef HAL_SRAM_RegisterCallback(SRAM_HandleTypeDef *hsram, HAL_SRAM_
   {
     return HAL_ERROR;
   }
+
+  /* Process locked */
+  __HAL_LOCK(hsram);
 
   state = hsram->State;
   if ((state == HAL_SRAM_STATE_READY) || (state == HAL_SRAM_STATE_RESET) || (state == HAL_SRAM_STATE_PROTECTED))
@@ -782,12 +779,14 @@ HAL_StatusTypeDef HAL_SRAM_RegisterCallback(SRAM_HandleTypeDef *hsram, HAL_SRAM_
     status =  HAL_ERROR;
   }
 
+  /* Release Lock */
+  __HAL_UNLOCK(hsram);
   return status;
 }
 
 /**
   * @brief  Unregister a User SRAM Callback
-  *         SRAM Callback is redirected to the weak predefined callback
+  *         SRAM Callback is redirected to the weak (surcharged) predefined callback
   * @param hsram : SRAM handle
   * @param CallbackId : ID of the callback to be unregistered
   *        This parameter can be one of the following values:
@@ -801,6 +800,9 @@ HAL_StatusTypeDef HAL_SRAM_UnRegisterCallback(SRAM_HandleTypeDef *hsram, HAL_SRA
 {
   HAL_StatusTypeDef status = HAL_OK;
   HAL_SRAM_StateTypeDef state;
+
+  /* Process locked */
+  __HAL_LOCK(hsram);
 
   state = hsram->State;
   if ((state == HAL_SRAM_STATE_READY) || (state == HAL_SRAM_STATE_PROTECTED))
@@ -847,12 +849,14 @@ HAL_StatusTypeDef HAL_SRAM_UnRegisterCallback(SRAM_HandleTypeDef *hsram, HAL_SRA
     status =  HAL_ERROR;
   }
 
+  /* Release Lock */
+  __HAL_UNLOCK(hsram);
   return status;
 }
 
 /**
   * @brief  Register a User SRAM Callback for DMA transfers
-  *         To be used to override the weak predefined callback
+  *         To be used instead of the weak (surcharged) predefined callback
   * @param hsram : SRAM handle
   * @param CallbackId : ID of the callback to be registered
   *        This parameter can be one of the following values:
@@ -1016,7 +1020,7 @@ HAL_StatusTypeDef HAL_SRAM_WriteOperation_Disable(SRAM_HandleTypeDef *hsram)
   *                the configuration information for SRAM module.
   * @retval HAL state
   */
-HAL_SRAM_StateTypeDef HAL_SRAM_GetState(const SRAM_HandleTypeDef *hsram)
+HAL_SRAM_StateTypeDef HAL_SRAM_GetState(SRAM_HandleTypeDef *hsram)
 {
   return hsram->State;
 }
@@ -1029,10 +1033,6 @@ HAL_SRAM_StateTypeDef HAL_SRAM_GetState(const SRAM_HandleTypeDef *hsram)
   * @}
   */
 
-/** @addtogroup SRAM_Private_Functions SRAM Private Functions
-  * @{
-  */
-
 /**
   * @brief  MDMA SRAM process complete callback.
   * @param  hmdma : MDMA handle
@@ -1040,7 +1040,6 @@ HAL_SRAM_StateTypeDef HAL_SRAM_GetState(const SRAM_HandleTypeDef *hsram)
   */
 static void SRAM_DMACplt(MDMA_HandleTypeDef *hmdma)
 {
-  /* Derogation MISRAC2012-Rule-11.5 */
   SRAM_HandleTypeDef *hsram = (SRAM_HandleTypeDef *)(hmdma->Parent);
 
   /* Disable the MDMA channel */
@@ -1063,7 +1062,6 @@ static void SRAM_DMACplt(MDMA_HandleTypeDef *hmdma)
   */
 static void SRAM_DMACpltProt(MDMA_HandleTypeDef *hmdma)
 {
-  /* Derogation MISRAC2012-Rule-11.5 */
   SRAM_HandleTypeDef *hsram = (SRAM_HandleTypeDef *)(hmdma->Parent);
 
   /* Disable the MDMA channel */
@@ -1086,7 +1084,6 @@ static void SRAM_DMACpltProt(MDMA_HandleTypeDef *hmdma)
   */
 static void SRAM_DMAError(MDMA_HandleTypeDef *hmdma)
 {
-  /* Derogation MISRAC2012-Rule-11.5 */
   SRAM_HandleTypeDef *hsram = (SRAM_HandleTypeDef *)(hmdma->Parent);
 
   /* Disable the MDMA channel */
@@ -1101,10 +1098,6 @@ static void SRAM_DMAError(MDMA_HandleTypeDef *hmdma)
   HAL_SRAM_DMA_XferErrorCallback(hmdma);
 #endif /* USE_HAL_SRAM_REGISTER_CALLBACKS */
 }
-
-/**
-  * @}
-  */
 
 /**
   * @}

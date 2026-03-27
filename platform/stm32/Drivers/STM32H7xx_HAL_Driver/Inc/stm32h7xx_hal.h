@@ -8,7 +8,7 @@
   * @attention
   *
   * Copyright (c) 2017 STMicroelectronics.
-  * All rights reserved.
+  * All rights reserved.</center></h2>
   *
   * This software is licensed under terms that can be found in the LICENSE file
   * in the root directory of this software component.
@@ -52,29 +52,17 @@ typedef enum
   */
 
 /* Exported constants --------------------------------------------------------*/
-/** @defgroup HAL_Exported_Constants HAL Exported Constants
-  * @{
-  */
+
 /** @defgroup REV_ID device revision ID
   * @{
   */
 #define REV_ID_Y ((uint32_t)0x1003)  /*!< STM32H7 rev.Y */
-#define REV_ID_Z ((uint32_t)0x1001)  /*!< STM32H7 rev.Z */
-#define REV_ID_A ((uint32_t)0x1000)  /*!< STM32H7 rev.A */
 #define REV_ID_B ((uint32_t)0x2000)  /*!< STM32H7 rev.B */
-#if (STM32H7_DEV_ID == 0x450UL)
 #define REV_ID_X ((uint32_t)0x2001)  /*!< STM32H7 rev.X */
-#else
-#define REV_ID_X ((uint32_t)0x1007)  /*!< STM32H7 rev.X */
-#endif /* STM32H7_DEV_ID */
 #define REV_ID_V ((uint32_t)0x2003)  /*!< STM32H7 rev.V */
 
 /**
   * @}
-  */
-  
-/** @defgroup SYSCFG_Exported_Constants SYSCFG Exported Constants
-  * @{
   */
 
 /** @defgroup SYSCFG_VREFBUF_VoltageScale VREFBUF Voltage Scale
@@ -242,9 +230,7 @@ typedef enum
   * @}
   */
 
-/**
-  * @}
-  */
+
 
 
 /** @defgroup EXTI_Event_Input_Config  Event Input Config
@@ -710,14 +696,9 @@ typedef enum
 /**
   * @}
   */
-/**
-  * @}
-  */
+
 
 /* Exported macro ------------------------------------------------------------*/
-/** @defgroup HAL_Exported_Macros HAL Exported Macros
-  * @{
-  */
 #if defined(DUAL_CORE)
 /** @defgroup ART_Exported_Macros ART Exported Macros
   * @{
@@ -852,10 +833,6 @@ typedef enum
 #endif /* !SYSCFG_PMCR_BOOSTEN */
 /**
   * @}
-  */
-
-/** @defgroup DBG_Exported_Macros DBG Exported Macros
-  * @{
   */
 
 /** @brief  Freeze/Unfreeze Peripherals in Debug mode
@@ -1025,12 +1002,6 @@ typedef enum
 #define __HAL_DBGMCU_UnFreeze2_IWDG1()          (DBGMCU->APB4FZ2  &= ~ (DBGMCU_APB4FZ2_DBG_IWDG1))
 
 #endif /*DUAL_CORE*/
-/**
-  * @}
-  */
-/**
-  * @}
-  */
 
 /** @defgroup HAL_Private_Macros HAL Private Macros
   * @{
@@ -1055,27 +1026,15 @@ extern HAL_TickFreqTypeDef uwTickFreq;
   */
 
 /* Exported functions --------------------------------------------------------*/
-/** @defgroup HAL_Exported_Functions HAL Exported Functions
-  * @{
-  */
+
 /* Initialization and de-initialization functions  ******************************/
-/** @defgroup HAL_Group1 Initialization and de-initialization Functions
-  * @{
-  */
 HAL_StatusTypeDef HAL_Init(void);
 HAL_StatusTypeDef HAL_DeInit(void);
 void HAL_MspInit(void);
 void HAL_MspDeInit(void);
 HAL_StatusTypeDef HAL_InitTick (uint32_t TickPriority);
 
-/**
-  * @}
-  */
-
 /* Peripheral Control functions  ************************************************/
-/** @defgroup HAL_Group2 HAL Control functions
- *
- */
 void HAL_IncTick(void);
 void HAL_Delay(uint32_t Delay);
 uint32_t HAL_GetTick(void);
@@ -1165,14 +1124,6 @@ void HAL_SYSCFG_ADC2ALT_Rout0Config(uint32_t Adc2AltRout0);
 #if defined(SYSCFG_ADC2ALT_ADC2_ROUT1)
 void HAL_SYSCFG_ADC2ALT_Rout1Config(uint32_t Adc2AltRout1);
 #endif /*SYSCFG_ADC2ALT_ADC2_ROUT1*/
-
-/**
-  * @}
-  */
-
-/**
-  * @}
-  */
 
 /**
   * @}

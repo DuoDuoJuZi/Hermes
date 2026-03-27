@@ -724,13 +724,13 @@ typedef enum
   */
 #define __HAL_SMARTCARD_DISABLE_IT(__HANDLE__, __INTERRUPT__)  (((((__INTERRUPT__) & SMARTCARD_CR_MASK) >>\
                                                                   SMARTCARD_CR_POS) == 1U)?\
-                                                                ((__HANDLE__)->Instance->CR1 &= ~ (1UL <<\
+                                                                ((__HANDLE__)->Instance->CR1 &= ~ (1U <<\
                                                                     ((__INTERRUPT__) & SMARTCARD_IT_MASK))): \
                                                                 ((((__INTERRUPT__) & SMARTCARD_CR_MASK) >>\
                                                                   SMARTCARD_CR_POS) == 2U)?\
-                                                                ((__HANDLE__)->Instance->CR2 &= ~ (1UL <<\
+                                                                ((__HANDLE__)->Instance->CR2 &= ~ (1U <<\
                                                                     ((__INTERRUPT__) & SMARTCARD_IT_MASK))): \
-                                                                ((__HANDLE__)->Instance->CR3 &= ~ (1UL <<\
+                                                                ((__HANDLE__)->Instance->CR3 &= ~ (1U <<\
                                                                     ((__INTERRUPT__) & SMARTCARD_IT_MASK))))
 
 /** @brief  Check whether the specified SmartCard interrupt has occurred or not.
@@ -1377,8 +1377,8 @@ void HAL_SMARTCARD_AbortReceiveCpltCallback(SMARTCARD_HandleTypeDef *hsmartcard)
   * @{
   */
 
-HAL_SMARTCARD_StateTypeDef HAL_SMARTCARD_GetState(const SMARTCARD_HandleTypeDef *hsmartcard);
-uint32_t                   HAL_SMARTCARD_GetError(const SMARTCARD_HandleTypeDef *hsmartcard);
+HAL_SMARTCARD_StateTypeDef HAL_SMARTCARD_GetState(SMARTCARD_HandleTypeDef *hsmartcard);
+uint32_t                   HAL_SMARTCARD_GetError(SMARTCARD_HandleTypeDef *hsmartcard);
 
 /**
   * @}
