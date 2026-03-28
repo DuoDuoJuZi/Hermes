@@ -157,9 +157,19 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
         let mut block_height = line_height;
         let mut current_y = v_metrics.ascent;
 
-        for c in trimmed.chars() {
-            let base_glyph = font.glyph(c);
-            let scaled_glyph = base_glyph.scaled(scale);
+          for c in trimmed.chars() {
+              if c == '\n' {
+                  current_x = 0.0;
+                  current_y += line_height;
+                  block_height += line_height;
+                  continue;
+              }
+              if c == '\r' {
+                  continue;
+              }
+
+              let base_glyph = font.glyph(c);
+              let scaled_glyph = base_glyph.scaled(scale);
             let h_metrics = scaled_glyph.h_metrics();
 
             if current_x + h_metrics.advance_width > max_width && current_x > 0.0 {

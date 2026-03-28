@@ -38,18 +38,25 @@ async fn fetch_and_parse_lrc(client: &reqwest::Client, song_id: &str) -> std::re
 
     let mut lyrics = Vec::new();
     if let Some(lrc_data) = resp.lrc {
-        for line in lrc_data.lyric.lines() {
-            if line.starts_with('[') {
+        for mut line in lrc_data.lyric.lines() {
+            line = line.trim();
+            let mut times = Vec::new();
+            while line.starts_with('[') {
                 if let Some(end_idx) = line.find(']') {
-                    let time_str = &line[1..end_idx];
-                    let text = line[end_idx + 1..].trim().to_string();
-
-                    let mut parts = time_str.split(':');
-                    if let (Some(m), Some(s)) = (parts.next(), parts.next()) {
-                        if let (Ok(minutes), Ok(seconds)) = (m.parse::<f64>(), s.parse::<f64>()) {
-                            let time = minutes * 60.0 + seconds;
-                            lyrics.push(LyricLine { time, text, trans: None });
-                        }
+                    times.push(&line[1..end_idx]);
+                    line = line[end_idx + 1..].trim();
+                } else {
+                    break;
+                }
+            }
+            
+            let text = line.to_string();
+            for time_str in times {
+                let mut parts = time_str.split(':');
+                if let (Some(m), Some(s)) = (parts.next(), parts.next()) {
+                    if let (Ok(minutes), Ok(seconds)) = (m.parse::<f64>(), s.parse::<f64>()) {
+                        let time = minutes * 60.0 + seconds;
+                        lyrics.push(LyricLine { time, text: text.clone(), trans: None });
                     }
                 }
             }
@@ -58,20 +65,27 @@ async fn fetch_and_parse_lrc(client: &reqwest::Client, song_id: &str) -> std::re
 
     let mut tlyrics = Vec::new();
     if let Some(t_data) = resp.tlyric {
-        for line in t_data.lyric.lines() {
-            if line.starts_with('[') {
+        for mut line in t_data.lyric.lines() {
+            line = line.trim();
+            let mut times = Vec::new();
+            while line.starts_with('[') {
                 if let Some(end_idx) = line.find(']') {
-                    let time_str = &line[1..end_idx];
-                    let text = line[end_idx + 1..].trim().to_string();
-
-                    let mut parts = time_str.split(':');
-                    if let (Some(m), Some(s)) = (parts.next(), parts.next()) {
-                        if let (Ok(minutes), Ok(seconds)) = (m.parse::<f64>(), s.parse::<f64>()) {
-                            let time = minutes * 60.0 + seconds;
-                            if !text.is_empty() {
-                                tlyrics.push((time, text));
-                            }
-                        }
+                    times.push(&line[1..end_idx]);
+                    line = line[end_idx + 1..].trim();
+                } else {
+                    break;
+                }
+            }
+            
+            let text = line.to_string();
+            if text.is_empty() { continue; }
+            
+            for time_str in times {
+                let mut parts = time_str.split(':');
+                if let (Some(m), Some(s)) = (parts.next(), parts.next()) {
+                    if let (Ok(minutes), Ok(seconds)) = (m.parse::<f64>(), s.parse::<f64>()) {
+                        let time = minutes * 60.0 + seconds;
+                        tlyrics.push((time, text.clone()));
                     }
                 }
             }
@@ -131,12 +145,10 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
                 if !current_lyric.is_empty() {
                     let mut lines = Vec::with_capacity(11);
 
-                    let mut display_text = current_lyric.clone();
-                    if let Some(trans) = &current_lyric_obj.trans {
-                        display_text = format!("{} {}", display_text, trans);
-                    }
-
-                    let start_idx = if target_idx >= 5 { target_idx - 5 } else { 0 };
+                      let mut display_text = current_lyric.clone();
+                      if let Some(trans) = &current_lyric_obj.trans {
+                          display_text = format!("{}\n{}", display_text, trans);
+                      }                    let start_idx = if target_idx >= 5 { target_idx - 5 } else { 0 };
                     for i in start_idx..target_idx {
                         lines.push(lyrics[i].text.clone());
                     }

@@ -285,7 +285,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let mut rx = state.lyric_tx.subscribe();
 
     while let Ok(lyric) = rx.recv().await {
-        let text_to_send = if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&lyric) {
+        let mut text_to_send = if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&lyric) {
             if parsed.len() == 11 {
                 parsed[5].clone()
             } else {
@@ -294,7 +294,9 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         } else {
             lyric.clone()
         };
-        
+
+        text_to_send = text_to_send.replace('\n', " - ");
+
         if socket.send(Message::Text(text_to_send.into())).await.is_err() {
             break;
         }
