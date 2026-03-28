@@ -1,8 +1,4 @@
-﻿/**
- * @Author: DuoDuoJuZi
- * @Date: 2026-03-21
- */
-use reqwest;
+﻿use reqwest;
 use serde::Deserialize;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
@@ -15,6 +11,8 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionMediaProperties,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus
 };
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 #[derive(Deserialize, Debug)]
 struct LrcResponse {
@@ -34,9 +32,6 @@ struct LyricLine {
     trans: Option<String>,
 }
 
-/**
- * 访问网易云音乐公共 API 获取对应的 LRC 文件并解析为时间轴格式数组返回
- */
 async fn fetch_and_parse_lrc(client: &reqwest::Client, song_id: &str) -> std::result::Result<Vec<LyricLine>, Box<dyn std::error::Error>> {
     let url = format!("http://127.0.0.1:10754/lyric?id={}&realIP=211.161.244.70", song_id);
     let resp = client.get(&url).send().await?.json::<LrcResponse>().await?;
@@ -94,9 +89,6 @@ async fn fetch_and_parse_lrc(client: &reqwest::Client, song_id: &str) -> std::re
     Ok(lyrics)
 }
 
-/**
- * 接收解析后的歌词数组并结合播放进度持续在流中广播当前实时歌词
- */
 async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMediaTransportControlsSession, lyric_tx: tokio::sync::broadcast::Sender<String>) {
     let mut current_idx = usize::MAX;
     let manual_offset_sec: f64 = 0.0;
@@ -137,20 +129,30 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
                 let current_lyric_obj = &lyrics[target_idx];
                 let current_lyric = &current_lyric_obj.text;
                 if !current_lyric.is_empty() {
-                    let mut lines = Vec::new();
-                    
+                    let mut lines = Vec::with_capacity(11);
+
                     let mut display_text = current_lyric.clone();
                     if let Some(trans) = &current_lyric_obj.trans {
                         display_text = format!("{} {}", display_text, trans);
                     }
 
-                    if target_idx >= 3 { lines.push(lyrics[target_idx - 3].text.clone()); } else { lines.push(String::new()); }
-                    if target_idx >= 2 { lines.push(lyrics[target_idx - 2].text.clone()); } else { lines.push(String::new()); }
-                    if target_idx >= 1 { lines.push(lyrics[target_idx - 1].text.clone()); } else { lines.push(String::new()); }
+                    let start_idx = if target_idx >= 5 { target_idx - 5 } else { 0 };
+                    for i in start_idx..target_idx {
+                        lines.push(lyrics[i].text.clone());
+                    }
+
+                    while lines.len() < 5 { lines.insert(0, String::new()); }
                     lines.push(display_text);
-                    if target_idx + 1 < lyrics.len() { lines.push(lyrics[target_idx + 1].text.clone()); } else { lines.push(String::new()); }
-                    if target_idx + 2 < lyrics.len() { lines.push(lyrics[target_idx + 2].text.clone()); } else { lines.push(String::new()); }
-                    if target_idx + 3 < lyrics.len() { lines.push(lyrics[target_idx + 3].text.clone()); } else { lines.push(String::new()); }
+
+                    for j in (target_idx + 1)..=(target_idx + 5) {
+                        if j < lyrics.len() {
+                            lines.push(lyrics[j].text.clone());
+                        } else {
+                            lines.push(String::new());
+                        }
+                    }
+
+                    while lines.len() < 11 { lines.push(String::new()); }
 
                     let json_str = serde_json::to_string(&lines).unwrap_or_default();
                     println!("{}", current_lyric);
@@ -162,7 +164,9 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
 
         sleep(Duration::from_millis(20)).await;
     }
-}fn create_media_props_handler(tx: tokio::sync::mpsc::UnboundedSender<String>, handle: tokio::runtime::Handle) -> TypedEventHandler<GlobalSystemMediaTransportControlsSession, MediaPropertiesChangedEventArgs> {
+}
+
+fn create_media_props_handler(tx: tokio::sync::mpsc::UnboundedSender<String>, handle: tokio::runtime::Handle) -> TypedEventHandler<GlobalSystemMediaTransportControlsSession, MediaPropertiesChangedEventArgs> {
     TypedEventHandler::<GlobalSystemMediaTransportControlsSession, MediaPropertiesChangedEventArgs>::new(move |session_ref, _| {
         let tx_inner = tx.clone();
         if let Some(session) = session_ref.clone() {
@@ -188,14 +192,11 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
     })
 }
 
-/**
- * 通过 Windows API 提供对媒体信息的访问并监听当前播放歌曲的变更
- */
-pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<String>, song_tx: tokio::sync::broadcast::Sender<String>) -> std::result::Result<(), Box<dyn std::error::Error>> {
+pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<String>, song_tx: tokio::sync::broadcast::Sender<String>, progress_tx: tokio::sync::broadcast::Sender<u16>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
     println!("正在连接 SMTC");
-    
+
     let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.await?;
     let handle = tokio::runtime::Handle::current();
 
@@ -225,7 +226,6 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
             if let Ok(session) = mgr.GetCurrentSession() {
                  let _ = session.MediaPropertiesChanged(&create_media_props_handler(tx_for_event.clone(), handle_for_event.clone()));
                  
-                 // Trigger once when session changes
                  let tx_inner = tx_for_event.clone();
                  let session_clone = session.clone();
                  handle_for_event.spawn(async move {
@@ -251,6 +251,71 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
 
     let mut current_task: Option<tokio::task::JoinHandle<()>> = None;
     let client = reqwest::Client::new();
+    let current_ncm_id = Arc::new(RwLock::new(None::<String>));
+    let progress_manager = manager.clone();
+    let progress_tx_clone = progress_tx.clone();
+    let current_ncm_id_for_task = current_ncm_id.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Ok(session) = progress_manager.GetCurrentSession() {
+                let mut matched_ncm: Option<String> = None;
+                if let Ok(op_props) = session.TryGetMediaPropertiesAsync() {
+                    if let Ok(properties) = op_props.await {
+                        let props: GlobalSystemMediaTransportControlsSessionMediaProperties = properties;
+                        if let Ok(genres) = props.Genres() {
+                            for genre in genres {
+                                let genre_str: String = genre.to_string();
+                                if genre_str.starts_with("NCM-") {
+                                    matched_ncm = Some(genre_str.replace("NCM-", ""));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(expected) = current_ncm_id_for_task.read().await.clone() {
+                    if let Some(found) = matched_ncm {
+                        if found != expected {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                            continue;
+                        }
+                    } else {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                        continue;
+                    }
+                }
+
+                if let Ok(timeline) = session.GetTimelineProperties() {
+                    if let (Ok(pos), Ok(last_updated), Ok(end_time)) = (timeline.Position(), timeline.LastUpdatedTime(), timeline.EndTime()) {
+                        let total = end_time.Duration;
+                        if total > 0 {
+                            let mut pos_100ns = pos.Duration;
+                            if let Ok(playback_info) = session.GetPlaybackInfo() {
+                                if let Ok(status) = playback_info.PlaybackStatus() {
+                                    if status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing {
+                                        if let Ok(now_sys) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+                                            let now_100ns = (now_sys.as_secs() * 10_000_000) as i64 + (now_sys.subsec_nanos() / 100) as i64;
+                                            let epoch_diff = 11644473600 * 10_000_000i64;
+                                            let current_universal_time = now_100ns + epoch_diff;
+                                            
+                                            let elapsed_100ns = current_universal_time - last_updated.UniversalTime;
+                                            if elapsed_100ns > 0 {
+                                                pos_100ns += elapsed_100ns;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            let progress = (pos_100ns as f64 / total as f64 * 1000.0) as u16;
+                            let _ = progress_tx_clone.send(progress.min(1000));
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        }
+    });
 
     let mut last_id = String::new();
     while let Some(song_id) = rx.recv().await {
@@ -258,7 +323,10 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
             println!("提取到网易云歌曲 ID: {}", song_id);
             last_id = song_id.clone();
             let _ = song_tx.send(song_id.clone());
-            
+            {
+                let mut writer = current_ncm_id.write().await;
+                *writer = Some(song_id.clone());
+            }
             if let Some(task) = current_task.take() {
                 task.abort();
             }

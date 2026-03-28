@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @Author: DuoDuoJuZi
  * @Date: 2026-03-22
  */
@@ -35,7 +35,14 @@ pub struct TextLayer {
 pub async fn fetch_cover_matrix(pic_url: &str) -> Result<ImageMatrix, Box<dyn Error>> {
     let img_bytes = reqwest::get(pic_url).await?.bytes().await?;
     let img = image::load_from_memory(&img_bytes)?.into_rgb8();
-    let resized = image::imageops::resize(&img, 200, 200, FilterType::Lanczos3);
+    let orig_w = img.width() as f32;
+    let orig_h = img.height() as f32;
+    let max_w = 280.0_f32;
+    let max_h = 280.0_f32;
+    let scale = (max_w / orig_w).min(max_h / orig_h).min(1.0);
+    let target_w = (orig_w * scale).max(1.0) as u32;
+    let target_h = (orig_h * scale).max(1.0) as u32;
+    let resized = image::imageops::resize(&img, target_w, target_h, FilterType::Lanczos3);
 
     let mut rgb_data = Vec::with_capacity((resized.width() * resized.height() * 3) as usize);
     for y in 0..resized.height() {
@@ -111,7 +118,8 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
     let font_data = std::fs::read(r#"C:\Windows\Fonts\msyh.ttc"#).ok()?;
     let font = Font::try_from_vec_and_index(font_data, 0)?;
 
-    let max_width = 480.0;
+    let max_width = 410.0;
+    let center_idx = lines.len() / 2;
 
     struct GlyphInfo<'a> {
         glyph: PositionedGlyph<'a>,
@@ -128,7 +136,7 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
     let mut blocks = Vec::new();
 
     for (i, line) in lines.iter().enumerate() {
-        let (size, alpha_mult, is_bold, is_active) = if i == 3 {
+        let (size, alpha_mult, is_bold, is_active) = if i == center_idx {
             (40.0, 1.0, true, 1u8)
         } else {
             (26.0, 1.0, true, 0u8)
@@ -174,28 +182,36 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
         blocks.push(LineBlock { glyphs: block_glyphs, height: block_height, is_active });
     }
 
-    if blocks.is_empty() || blocks.len() < 7 {
+    if blocks.is_empty() {
         return None;
     }
 
-    let top_height = blocks[0].height + blocks[1].height + blocks[2].height;
-    let bottom_height = blocks[4].height + blocks[5].height + blocks[6].height;
-    let center_height = blocks[3].height;
+    let n = blocks.len();
 
+    let top_height: f32 = blocks.iter().take(center_idx).map(|b| b.height).sum();
+    let bottom_height: f32 = blocks.iter().skip(center_idx + 1).map(|b| b.height).sum();
+    let center_height: f32 = blocks[center_idx].height;
     let half_offset = top_height.max(bottom_height);
 
-    let start_y_0 = half_offset - top_height;
-    let start_y_1 = start_y_0 + blocks[0].height;
-    let start_y_2 = start_y_1 + blocks[1].height;
-    let start_y_3 = half_offset;
-    let start_y_4 = start_y_3 + blocks[3].height;
-    let start_y_5 = start_y_4 + blocks[4].height;
-    let start_y_6 = start_y_5 + blocks[5].height;
+    let mut y_offsets = vec![0.0_f32; n];
+    y_offsets[center_idx] = half_offset;
 
-    let y_offsets = [start_y_0, start_y_1, start_y_2, start_y_3, start_y_4, start_y_5, start_y_6];
+    let mut y_temp = half_offset;
+    if center_idx > 0 {
+        for j in (0..center_idx).rev() {
+            y_temp -= blocks[j].height;
+            y_offsets[j] = y_temp;
+        }
+    }
+
+    let mut y_temp2 = half_offset + center_height;
+    for k in (center_idx + 1)..n {
+        y_offsets[k] = y_temp2;
+        y_temp2 += blocks[k].height;
+    }
 
     let virtual_total_height = half_offset * 2.0 + center_height;
-    let screen_y_base = (480.0 - virtual_total_height) / 2.0;
+    let screen_y_base = 120.0 + (360.0 - virtual_total_height) / 2.0 - 30.0;
 
     let mut layers = Vec::new();
 
@@ -238,7 +254,10 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
         }
         
         let y_float = screen_y_base + y_offsets[i];
-        let start_x = 310;
+        if y_float < 115.0 || y_float + (height_ceil as f32) > 420.0 {
+            continue;
+        }
+        let start_x = 360;
 
         layers.push(TextLayer {
             x: start_x as i16,
@@ -248,6 +267,94 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
             is_active: block.is_active,
             pixel_data,
         });
+    }
+
+    Some(layers)
+}
+
+/// 完全独立渲染歌曲标题与歌手专辑元数据信息
+pub fn generate_meta_layers(title: &str, subtitle: &str) -> Option<Vec<TextLayer>> {
+    let font_data = std::fs::read(r#"C:\Windows\Fonts\msyh.ttc"#).ok()?;
+    let font = Font::try_from_vec_and_index(font_data, 0)?;
+
+    let max_width = 410.0;
+    let start_x = 360.0;
+    let mut current_y = 10.0;
+    let mut layers = Vec::new();
+
+    let meta_lines = vec![(title, 46.0, true, 1u8), (subtitle, 22.0, false, 0u8)];
+    for (line, size, is_bold, is_active) in meta_lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let scale = Scale::uniform(size);
+        let v_metrics = font.v_metrics(scale);
+        let line_height = size * 1.3;
+
+        let mut actual_max_x = 0;
+        let mut actual_max_y = 0;
+        let mut glyphs = Vec::new();
+        let mut current_x = 0.0;
+        let block_y_asc = v_metrics.ascent;
+
+        for c in trimmed.chars() {
+            let base_glyph = font.glyph(c);
+            let scaled_glyph = base_glyph.scaled(scale);
+            let h_metrics = scaled_glyph.h_metrics();
+
+            if current_x + h_metrics.advance_width > max_width && current_x > 0.0 {
+                break;
+            }
+
+            let positioned = scaled_glyph.positioned(point(current_x, block_y_asc));
+            current_x += h_metrics.advance_width;
+
+            let bb_opt = positioned.pixel_bounding_box();
+            if let Some(bb) = bb_opt {
+                if bb.max.x > actual_max_x { actual_max_x = bb.max.x; }
+                if bb.max.y > actual_max_y { actual_max_y = bb.max.y; }
+            }
+            glyphs.push((positioned, bb_opt));
+        }
+
+        let actual_width = (actual_max_x as usize).max(1);
+        let height_ceil = (actual_max_y as usize).max(1);
+
+        let mut pixel_data = vec![0u8; actual_width * height_ceil];
+        for (glyph, bb_opt) in glyphs {
+            if let Some(bb) = bb_opt {
+                glyph.draw(|x, y, v| {
+                    let mut draw_pixel = |dx: i32| {
+                        let px = bb.min.x + x as i32 + dx;
+                        let py = bb.min.y + y as i32;
+                        if px >= 0 && px < actual_width as i32 && py >= 0 && py < height_ceil as i32 {
+                            let idx = (py as usize) * actual_width + (px as usize);
+                            let val = (v * 255.0) as u8;
+                            if val > pixel_data[idx] {
+                                pixel_data[idx] = val;
+                            }
+                        }
+                    };
+                    draw_pixel(0);
+                    if is_bold {
+                        draw_pixel(1);
+                    }
+                });
+            }
+        }
+
+        layers.push(TextLayer {
+            x: start_x as i16,
+            y: current_y as i16,
+            width: actual_width as u16,
+            height: height_ceil as u16,
+            is_active,
+            pixel_data,
+        });
+
+        current_y += line_height + 5.0;
     }
 
     Some(layers)

@@ -10,6 +10,7 @@ pub enum PacketType {
     TextGrayscale = 0x02,
     ClearRect = 0x03,
     TextLayer = 0x04,
+    Progress = 0x05,
 }
 
 /// 构建底层原始包裹结构并计算校验和
@@ -74,4 +75,11 @@ pub fn pack_text_matrix(matrix: &TextMatrix) -> Vec<u8> {
     payload.extend_from_slice(&(matrix.height as u16).to_le_bytes());
     payload.extend_from_slice(&matrix.pixel_data);
     build_packet(PacketType::TextGrayscale, &payload)
+}
+
+/// 封装播放进度包，千分比
+pub fn pack_progress(permille: u16) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(2);
+    payload.extend_from_slice(&permille.to_le_bytes());
+    build_packet(PacketType::Progress, &payload)
 }

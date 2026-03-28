@@ -15,6 +15,8 @@ use tokio::io::{self, AsyncBufReadExt, BufReader};
 use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
 use std::time::Duration;
 use tokio::time::sleep;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 mod graphics;
 mod api_process;
@@ -34,6 +36,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let (lyric_tx, _) = broadcast::channel::<String>(100);
     let (song_tx, _) = broadcast::channel::<String>(100);
+    let (progress_tx, _) = broadcast::channel::<u16>(100);
     let mut song_rx = song_tx.subscribe();
     let mut terminal_lyric_rx = lyric_tx.subscribe();
 
@@ -93,48 +96,104 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let serial_tx_for_lyric = serial_tx.clone();
     let mut serial_lyric_rx = lyric_tx.subscribe();
-    
+
     tokio::spawn(async move {
         while let Ok(lyric) = serial_lyric_rx.recv().await {
             let lines: Vec<String> = if let Ok(parsed) = serde_json::from_str(lyric.trim()) {
                 parsed
             } else {
-                vec![String::new(), String::new(), lyric.trim().to_string(), String::new(), String::new()]
+                let mut f = Vec::with_capacity(11);
+                for _ in 0..5 { f.push(String::new()); }
+                f.push(lyric.trim().to_string());
+                while f.len() < 11 { f.push(String::new()); }
+                f
             };
 
             if lines.iter().all(|l| l.trim().is_empty()) { continue; }
 
             if let Some(layers) = graphics::generate_text_layers(&lines) {
-                // Clear the whole right section first
-                let clear_packet = protocol::pack_clear_rect(300, 0, 500, 480);
+                let clear_packet = protocol::pack_clear_rect(360, 115, 440, 305);
                 let _ = serial_tx_for_lyric.send(clear_packet);
 
-                // Keep some delay interval? In blocking queue it's pushed serially anyway.
                 for layer in layers {
                     let packet = protocol::pack_text_layer(&layer);
                     let _ = serial_tx_for_lyric.send(packet);
                 }
             }
         }
-    });    let serial_tx_for_cover = serial_tx.clone();
+    });
+
+    let serial_tx_for_progress = serial_tx.clone();
+    let mut serial_progress_rx = progress_tx.subscribe();
+
+    tokio::spawn(async move {
+        while let Ok(progress) = serial_progress_rx.recv().await {
+            let packet = protocol::pack_progress(progress);
+            let _ = serial_tx_for_progress.send(packet);
+        }
+    });
+
+    let serial_tx_for_cover = serial_tx.clone();
     let mut song_rx_for_cover = song_tx.subscribe();
+    let resend_lyric_tx = lyric_tx.clone();
+    
+    let last_lyric_store = Arc::new(RwLock::new(String::new()));
+    let last_lyric_store_for_update = last_lyric_store.clone();
+    let mut lyric_rx_for_store = lyric_tx.subscribe();
     
     tokio::spawn(async move {
-        while let Ok(song_id) = song_rx_for_cover.recv().await {
-            let url = format!("https://music.163.com/api/song/detail/?id={}&ids=[{}]", song_id, song_id);
-            if let Ok(resp) = reqwest::get(&url).await {
-                if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    if let Some(pic) = json["songs"][0]["album"]["picUrl"].as_str() {
-                        if let Ok(matrix) = graphics::fetch_cover_matrix(pic).await {
-                            graphics::print_cover_to_console(&matrix);
-                            let packet = protocol::pack_cover_matrix(&matrix);
-                            let _ = serial_tx_for_cover.send(packet);
+        while let Ok(lyric) = lyric_rx_for_store.recv().await {
+            *last_lyric_store_for_update.write().await = lyric;
+        }
+    });
+
+    {
+        tokio::spawn(async move {
+            while let Ok(song_id) = song_rx_for_cover.recv().await {
+                let url = format!("https://music.163.com/api/song/detail/?id={}&ids=[{}]", song_id, song_id);
+                if let Ok(resp) = reqwest::get(&url).await {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        let mut pic_url = json["songs"][0]["album"]["picUrl"].as_str();
+                        if pic_url.is_none() { pic_url = json["songs"][0]["al"]["picUrl"].as_str(); }
+
+                        if let Some(pic) = pic_url {
+                            let title = json["songs"][0]["name"].as_str().unwrap_or("未知歌曲").to_string();
+                            
+                            let mut artist = json["songs"][0]["artists"][0]["name"].as_str().unwrap_or("").to_string();
+                            if artist.is_empty() { artist = json["songs"][0]["ar"][0]["name"].as_str().unwrap_or("-").to_string(); }
+                            
+                            let mut album = json["songs"][0]["album"]["name"].as_str().unwrap_or("").to_string();
+                            if album.is_empty() { album = json["songs"][0]["al"]["name"].as_str().unwrap_or("-").to_string(); }
+                            
+                            let artist_album = format!("{} - {}", artist, album);
+
+                            if let Ok(matrix) = graphics::fetch_cover_matrix(pic).await {
+                                graphics::print_cover_to_console(&matrix);
+                                let packet = protocol::pack_cover_matrix(&matrix);
+                                let _ = serial_tx_for_cover.send(packet);
+                            }
+                            
+                            tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+
+                            if let Some(meta_layers) = graphics::generate_meta_layers(&title, &artist_album) {
+                                let clear_meta = protocol::pack_clear_rect(360, 0, 440, 115);
+                                let _ = serial_tx_for_cover.send(clear_meta);
+                                for layer in meta_layers {
+                                    let packet = protocol::pack_text_layer(&layer);
+                                    let _ = serial_tx_for_cover.send(packet);
+                                }
+                            }
+
+                            let last_lyric = last_lyric_store.read().await.clone();
+                            if !last_lyric.is_empty() {
+                                let _ = resend_lyric_tx.send(last_lyric);
+                            }
                         }
                     }
                 }
             }
-        }
-    });
+        });
+    }
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
@@ -162,8 +221,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     {
         let tx_clone = app_state.lyric_tx.clone();
         let song_tx_clone = song_tx.clone();
+        let progress_tx_clone = progress_tx.clone();
         tokio::spawn(async move {
-            let _ = provider_api::listen_smtc_and_sync(tx_clone, song_tx_clone).await;
+            let _ = provider_api::listen_smtc_and_sync(tx_clone, song_tx_clone, progress_tx_clone).await;
         });
     }
 
@@ -221,8 +281,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
     while let Ok(lyric) = rx.recv().await {
         let text_to_send = if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&lyric) {
-            if parsed.len() == 5 {
-                parsed[2].clone()
+            if parsed.len() == 11 {
+                parsed[5].clone()
             } else {
                 lyric.clone()
             }
