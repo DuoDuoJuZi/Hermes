@@ -1,7 +1,7 @@
 /**
  * @Author: DuoDuoJuZi
  * @Date: 2026-03-27
- * @brief ´®¿ÚÊý¾ÝÐ­Òé½âÎöÍ·ÎÄ¼þ£¬
+ * @brief ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð­ï¿½ï¿½ï¿½ï¿½ï¿½Í·ï¿½Ä¼ï¿½ï¿½ï¿?
  */
 #ifndef __PROTOCOL_PARSER_H
 #define __PROTOCOL_PARSER_H
@@ -9,16 +9,16 @@
 #include "stdint.h"
 
 /**
- * @brief ³õÊ¼»¯Ð­Òé½âÎö×´Ì¬»ú£¬
- * @param ÎÞ£¬
- * @return ÎÞ£¬
+ * @brief ï¿½ï¿½Ê¼ï¿½ï¿½Ð­ï¿½ï¿½ï¿½ï¿½ï¿½×´Ì?ï¿½ï¿½ï¿½ï¿½
+ * @param ï¿½Þ£ï¿½
+ * @return ï¿½Þ£ï¿½
  */
 void Protocol_Init(void);
 
 /**
- * @brief ½âÎöµ¥¸ö×Ö½Ú²¢Çý¶¯×´Ì¬»ú£¬
- * @param byte ½ÓÊÕµ½µÄµ¥¸ö×Ö½ÚÊý¾Ý£¬
- * @return ÎÞ£¬
+ * @brief ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö½Ú²ï¿½ï¿½ï¿½ï¿½ï¿½×´Ì¬ï¿½ï¿½ï¿½ï¿½
+ * @param byte ï¿½ï¿½ï¿½Õµï¿½ï¿½Äµï¿½ï¿½ï¿½ï¿½Ö½ï¿½ï¿½ï¿½ï¿½Ý£ï¿½
+ * @return ï¿½Þ£ï¿½
  */
 void Protocol_ParseByte(uint8_t byte);
 
