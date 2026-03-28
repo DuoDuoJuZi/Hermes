@@ -2,7 +2,7 @@
   "name": "hermes-vscode",
   "displayName": "Hermes-VSCode",
   "description": "在状态栏实时显示正在播放的网易云音乐歌词",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "DuoDuoJuZi",
   "engines": {
     "vscode": "^1.80.0"
