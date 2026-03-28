@@ -1,7 +1,7 @@
 plugins {
     id("java")
-    id("org.jetbrains.kotlin.jvm") version "1.9.0"
-    id("org.jetbrains.intellij") version "1.17.4"
+    id("org.jetbrains.kotlin.jvm") version "2.1.10"
+    id("org.jetbrains.intellij.platform") version "2.3.0"
 }
 
 group = "com.duoduojuzi"
@@ -9,18 +9,30 @@ version = "0.2.0"
 
 repositories {
     mavenCentral()
+    intellijPlatform {
+        defaultRepositories()
+    }
 }
 
 dependencies {
     implementation("org.java-websocket:Java-WebSocket:1.5.3") {
         exclude(group = "org.slf4j", module = "slf4j-api")
     }
+
+    intellijPlatform {
+        intellijIdeaCommunity("2024.3.3")
+        instrumentationTools()
+    }
 }
 
-intellij {
-    version.set("2025.3.3")
-    type.set("IC")
-    plugins.set(listOf())
+intellijPlatform {
+    pluginConfiguration {
+        version = project.version.toString()
+        ideaVersion {
+            sinceBuild = "232"
+            untilBuild = "253.*"
+        }
+    }
 }
 
 tasks {
@@ -29,16 +41,12 @@ tasks {
         targetCompatibility = "17"
     }
     withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-        kotlinOptions.jvmTarget = "17"
-    }
-    patchPluginXml {
-        sinceBuild.set("232")
-        untilBuild.set("253.*")
+        compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
-tasks.prepareSandbox {
+tasks.named<org.jetbrains.intellij.platform.gradle.tasks.PrepareSandboxTask>("prepareSandbox") {
     from("bin") {
-        into("${intellij.pluginName.get()}/bin")
+        into("${project.name}/bin")
     }
 }
