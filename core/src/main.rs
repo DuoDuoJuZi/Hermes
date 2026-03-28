@@ -127,9 +127,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut serial_progress_rx = progress_tx.subscribe();
 
     tokio::spawn(async move {
+        let mut last_send = tokio::time::Instant::now() - tokio::time::Duration::from_secs(1);
         while let Ok(progress) = serial_progress_rx.recv().await {
-            let packet = protocol::pack_progress(progress);
-            let _ = serial_tx_for_progress.send(packet);
+            let now = tokio::time::Instant::now();
+            if now.duration_since(last_send).as_millis() >= 1000 {
+                let packet = protocol::pack_progress(progress);
+                let _ = serial_tx_for_progress.send(packet);
+                last_send = now;
+            }
         }
     });
 
