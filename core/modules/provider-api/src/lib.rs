@@ -94,8 +94,15 @@ async fn fetch_and_parse_lrc(client: &reqwest::Client, song_id: &str) -> std::re
 
     // 将翻译合并到主歌词中
     for lyric in &mut lyrics {
-        if let Some(t) = tlyrics.iter().find(|t| (t.0 - lyric.time).abs() < 1.0) {
-            lyric.trans = Some(t.1.clone());
+        let closest = tlyrics.iter().min_by(|a, b| {
+            let diff_a = (a.0 - lyric.time).abs();
+            let diff_b = (b.0 - lyric.time).abs();
+            diff_a.partial_cmp(&diff_b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if let Some(t) = closest {
+            if (t.0 - lyric.time).abs() < 0.1 {
+                lyric.trans = Some(t.1.clone());
+            }
         }
     }
 
