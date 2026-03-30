@@ -211,7 +211,7 @@ fn create_media_props_handler(tx: tokio::sync::mpsc::UnboundedSender<String>, ha
     })
 }
 
-pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<String>, song_tx: tokio::sync::broadcast::Sender<String>, progress_tx: tokio::sync::broadcast::Sender<u16>) -> std::result::Result<(), Box<dyn std::error::Error>> {
+pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<String>, song_tx: tokio::sync::broadcast::Sender<String>, progress_tx: tokio::sync::broadcast::Sender<u16>, play_state_tx: tokio::sync::broadcast::Sender<bool>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
     println!("正在连接 SMTC");
@@ -275,6 +275,7 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
     let progress_tx_clone = progress_tx.clone();
     let current_ncm_id_for_task = current_ncm_id.clone();
     tokio::spawn(async move {
+        let mut last_play_state: Option<bool> = None;
         loop {
             if let Ok(session) = progress_manager.GetCurrentSession() {
                 let mut matched_ncm: Option<String> = None;
@@ -310,14 +311,16 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
                         let total = end_time.Duration;
                         if total > 0 {
                             let mut pos_100ns = pos.Duration;
+                            let mut is_playing = false;
                             if let Ok(playback_info) = session.GetPlaybackInfo() {
                                 if let Ok(status) = playback_info.PlaybackStatus() {
                                     if status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing {
+                                        is_playing = true;
                                         if let Ok(now_sys) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
                                             let now_100ns = (now_sys.as_secs() * 10_000_000) as i64 + (now_sys.subsec_nanos() / 100) as i64;
                                             let epoch_diff = 11644473600 * 10_000_000i64;
                                             let current_universal_time = now_100ns + epoch_diff;
-                                            
+
                                             let elapsed_100ns = current_universal_time - last_updated.UniversalTime;
                                             if elapsed_100ns > 0 {
                                                 pos_100ns += elapsed_100ns;
@@ -325,6 +328,10 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
                                         }
                                     }
                                 }
+                            }
+                            if Some(is_playing) != last_play_state {
+                                let _ = play_state_tx.send(is_playing);
+                                last_play_state = Some(is_playing);
                             }
                             let progress = (pos_100ns as f64 / total as f64 * 1000.0) as u16;
                             let _ = progress_tx_clone.send(progress.min(1000));

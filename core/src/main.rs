@@ -37,6 +37,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (lyric_tx, _) = broadcast::channel::<String>(100);
     let (song_tx, _) = broadcast::channel::<String>(100);
     let (progress_tx, _) = broadcast::channel::<u16>(100);
+    let (play_state_tx, _) = broadcast::channel::<bool>(100);
     let mut song_rx = song_tx.subscribe();
     let mut terminal_lyric_rx = lyric_tx.subscribe();
 
@@ -138,15 +139,38 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let serial_tx_for_play_state = serial_tx.clone();
+    let mut serial_play_state_rx = play_state_tx.subscribe();
+
+    tokio::spawn(async move {
+        while let Ok(is_playing) = serial_play_state_rx.recv().await {
+            let clear_packet = protocol::pack_clear_rect(160 - 15, 380, 30, 30);
+            let _ = serial_tx_for_play_state.send(clear_packet);
+            
+            let layer = graphics::generate_play_state_layer(is_playing);
+            let packet = protocol::pack_text_layer(&layer);
+            let _ = serial_tx_for_play_state.send(packet);
+        }
+    });
+
     let serial_tx_for_cover = serial_tx.clone();
     let mut song_rx_for_cover = song_tx.subscribe();
     let resend_lyric_tx = lyric_tx.clone();
-    
+    let resend_play_state_tx = play_state_tx.clone();
+
+    let last_play_state_store = Arc::new(RwLock::new(None::<bool>));
+    let last_play_state_store_for_update = last_play_state_store.clone();
+    let mut play_state_rx_for_store = play_state_tx.subscribe();
+
+    tokio::spawn(async move {
+        while let Ok(is_playing) = play_state_rx_for_store.recv().await {
+            *last_play_state_store_for_update.write().await = Some(is_playing);
+        }
+    });
+
     let last_lyric_store = Arc::new(RwLock::new(String::new()));
     let last_lyric_store_for_update = last_lyric_store.clone();
-    let mut lyric_rx_for_store = lyric_tx.subscribe();
-    
-    tokio::spawn(async move {
+    let mut lyric_rx_for_store = lyric_tx.subscribe();    tokio::spawn(async move {
         while let Ok(lyric) = lyric_rx_for_store.recv().await {
             *last_lyric_store_for_update.write().await = lyric;
         }
@@ -193,6 +217,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                             if !last_lyric.is_empty() {
                                 let _ = resend_lyric_tx.send(last_lyric);
                             }
+                            
+                            let last_play_state = last_play_state_store.read().await.clone();
+                            if let Some(is_playing) = last_play_state {
+                                let _ = resend_play_state_tx.send(is_playing);
+                            }
                         }
                     }
                 }
@@ -227,8 +256,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let tx_clone = app_state.lyric_tx.clone();
         let song_tx_clone = song_tx.clone();
         let progress_tx_clone = progress_tx.clone();
+        let play_state_tx_clone = play_state_tx.clone();
         tokio::spawn(async move {
-            let _ = provider_api::listen_smtc_and_sync(tx_clone, song_tx_clone, progress_tx_clone).await;
+            let _ = provider_api::listen_smtc_and_sync(tx_clone, song_tx_clone, progress_tx_clone, play_state_tx_clone).await;
         });
     }
 
