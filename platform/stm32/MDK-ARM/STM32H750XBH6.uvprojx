@@ -459,6 +459,16 @@
               <FileType>1</FileType>
               <FilePath>..\Drivers\User\Src\protocol_parser.c</FilePath>
             </File>
+            <File>
+              <FileName>touch_800x480.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Drivers\User\Src\touch_800x480.c</FilePath>
+            </File>
+            <File>
+              <FileName>touch_iic.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Drivers\User\Src\touch_iic.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -1118,6 +1128,16 @@
               <FileName>protocol_parser.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Drivers\User\Src\protocol_parser.c</FilePath>
+            </File>
+            <File>
+              <FileName>touch_800x480.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Drivers\User\Src\touch_800x480.c</FilePath>
+            </File>
+            <File>
+              <FileName>touch_iic.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Drivers\User\Src\touch_iic.c</FilePath>
             </File>
           </Files>
         </Group>

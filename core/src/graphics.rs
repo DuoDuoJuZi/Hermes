@@ -117,27 +117,6 @@ pub async fn fetch_and_print_cover(pic_url: &str) -> Result<(), Box<dyn Error>> 
 pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
     let font_data = std::fs::read(r#"C:\Windows\Fonts\msyh.ttc"#).ok()?;
     let font = Font::try_from_vec_and_index(font_data, 0)?;
-    
-    let kr_data = std::fs::read(r#"C:\Windows\Fonts\malgun.ttf"#).unwrap_or_default();
-    let kr_font_opt = Font::try_from_vec_and_index(kr_data, 0);
-    
-    let jp_data = std::fs::read(r#"C:\Windows\Fonts\meiryo.ttc"#).unwrap_or_default();
-    let jp_font_opt = Font::try_from_vec_and_index(jp_data, 0);
-
-    let get_fallback_glyph = |c: char| {
-        let g = font.glyph(c);
-        if g.id().0 == 0 {
-            if let Some(ref kr) = kr_font_opt {
-                let kr_g = kr.glyph(c);
-                if kr_g.id().0 != 0 { return kr_g; }
-            }
-            if let Some(ref jp) = jp_font_opt {
-                let jp_g = jp.glyph(c);
-                if jp_g.id().0 != 0 { return jp_g; }
-            }
-        }
-        g
-    };
 
     let max_width = 410.0;
     let center_idx = lines.len() / 2;
@@ -189,9 +168,11 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
                   continue;
               }
 
-              let base_glyph = get_fallback_glyph(c);
+              let base_glyph = font.glyph(c);
               let scaled_glyph = base_glyph.scaled(scale);
-              let h_metrics = scaled_glyph.h_metrics();            if current_x + h_metrics.advance_width > max_width && current_x > 0.0 {
+            let h_metrics = scaled_glyph.h_metrics();
+
+            if current_x + h_metrics.advance_width > max_width && current_x > 0.0 {
                 current_x = 0.0;
                 current_y += line_height;
                 block_height += line_height;
@@ -306,27 +287,6 @@ pub fn generate_meta_layers(title: &str, subtitle: &str) -> Option<Vec<TextLayer
     let font_data = std::fs::read(r#"C:\Windows\Fonts\msyh.ttc"#).ok()?;
     let font = Font::try_from_vec_and_index(font_data, 0)?;
 
-    let kr_data = std::fs::read(r#"C:\Windows\Fonts\malgun.ttf"#).unwrap_or_default();
-    let kr_font_opt = Font::try_from_vec_and_index(kr_data, 0);
-    
-    let jp_data = std::fs::read(r#"C:\Windows\Fonts\meiryo.ttc"#).unwrap_or_default();
-    let jp_font_opt = Font::try_from_vec_and_index(jp_data, 0);
-
-    let get_fallback_glyph = |c: char| {
-        let g = font.glyph(c);
-        if g.id().0 == 0 {
-            if let Some(ref kr) = kr_font_opt {
-                let kr_g = kr.glyph(c);
-                if kr_g.id().0 != 0 { return kr_g; }
-            }
-            if let Some(ref jp) = jp_font_opt {
-                let jp_g = jp.glyph(c);
-                if jp_g.id().0 != 0 { return jp_g; }
-            }
-        }
-        g
-    };
-
     let max_width = 410.0;
     let start_x = 360.0;
     let mut current_y = 10.0;
@@ -346,13 +306,15 @@ pub fn generate_meta_layers(title: &str, subtitle: &str) -> Option<Vec<TextLayer
         let mut actual_max_x = 0;
         let mut actual_max_y = 0;
         let mut glyphs = Vec::new();
-          let mut current_x = 0.0;
-          let block_y_asc = v_metrics.ascent;
+        let mut current_x = 0.0;
+        let block_y_asc = v_metrics.ascent;
 
-          for c in trimmed.chars() {
-              let base_glyph = get_fallback_glyph(c);
-              let scaled_glyph = base_glyph.scaled(scale);
-              let h_metrics = scaled_glyph.h_metrics();            if current_x + h_metrics.advance_width > max_width && current_x > 0.0 {
+        for c in trimmed.chars() {
+            let base_glyph = font.glyph(c);
+            let scaled_glyph = base_glyph.scaled(scale);
+            let h_metrics = scaled_glyph.h_metrics();
+
+            if current_x + h_metrics.advance_width > max_width && current_x > 0.0 {
                 break;
             }
 
@@ -408,6 +370,9 @@ pub fn generate_meta_layers(title: &str, subtitle: &str) -> Option<Vec<TextLayer
     Some(layers)
 }
 
+/// 打印文本像素点阵到控制台
+pub fn print_text_matrix(matrix: &TextMatrix, text: &str) {}
+
 /// 生成播放状态图标图层
 pub fn generate_play_state_layer(is_play: bool) -> TextLayer {
     let width: usize = 30;
@@ -444,9 +409,6 @@ pub fn generate_play_state_layer(is_play: bool) -> TextLayer {
         pixel_data,
     }
 }
-
-/// 打印文本像素点阵到控制台
-pub fn print_text_matrix(matrix: &TextMatrix, text: &str) {}
 
 /// 直接将字符串渲染成像素矩阵并输出到终端
 pub fn render_text_to_console(text: &str) {}
