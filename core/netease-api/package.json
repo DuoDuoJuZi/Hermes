@@ -11,6 +11,6 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@neteaseapireborn/api": "^4.29.7"
+    "NeteaseCloudMusicApi": "^4.29.0"
   }
 }

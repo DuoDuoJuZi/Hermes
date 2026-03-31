@@ -65,14 +65,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     });
 
     let (serial_tx, mut serial_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (hw_event_tx, mut hw_event_rx) = tokio::sync::mpsc::unbounded_channel::<u8>();
 
     std::thread::spawn(move || {
         let port_name = "COM5";
-        let baud_rate = 115200; 
+        let baud_rate = 115200;
 
         println!("正在尝试连接 ({})...", port_name);
         let mut port = match serialport::new(port_name, baud_rate)
-            .timeout(std::time::Duration::from_millis(5000))
+            .timeout(std::time::Duration::from_millis(2000))
             .open()
         {
             Ok(mut p) => {
@@ -87,10 +88,76 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             }
         };
 
-        while let Some(packet) = serial_rx.blocking_recv() {
-            println!("准备向单片机发送包裹，大小: {} bytes", packet.len());
-            if let Err(e) = port.write_all(&packet) {
-                eprintln!("串口发送失败: {}", e);
+        let mut read_buf = [0u8; 1024];
+
+        loop {
+            let mut work_done = false;
+
+            match serial_rx.try_recv() {
+                Ok(packet) => {
+                    let mut offset = 0;
+                    while offset < packet.len() {
+                        let end = std::cmp::min(offset + 1024, packet.len());
+                        if let Err(e) = port.write_all(&packet[offset..end]) {
+                            eprintln!("串口发送失败: {}", e);
+                            break;
+                        }
+                        offset = end;
+
+                        if let Ok(bytes_to_read) = port.bytes_to_read() {
+                            if bytes_to_read > 0 {
+                                let to_read = std::cmp::min(bytes_to_read as usize, read_buf.len());
+                                if let Ok(n) = std::io::Read::read(&mut *port, &mut read_buf[..to_read]) {
+                                    for &b in &read_buf[..n] {
+                                        if b == b'P' {
+                                            println!("接收到播放/暂停请求");
+                                            let _ = hw_event_tx.send(b'P');
+                                        } else if b == b'E' {
+                                            println!("接收到了不在范围内的点击");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    work_done = true;
+                }
+                Err(_) => {}
+            }
+
+            if let Ok(bytes_to_read) = port.bytes_to_read() {
+                if bytes_to_read > 0 {
+                    work_done = true;
+                    let to_read = std::cmp::min(bytes_to_read as usize, read_buf.len());
+                    if let Ok(n) = std::io::Read::read(&mut *port, &mut read_buf[..to_read]) {
+                        for &b in &read_buf[..n] {
+                            if b == b'P' {
+                                println!("接收到播放/暂停请求");
+                                let _ = hw_event_tx.send(b'P');
+                            } else if b == b'E' {
+                                println!("接收到了不在范围内的点击");
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !work_done {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        if let Ok(op) = GlobalSystemMediaTransportControlsSessionManager::RequestAsync() {
+            if let Ok(manager) = op.await {
+                while let Some(event) = hw_event_rx.recv().await {
+                    if event == b'P' {
+                        if let Ok(session) = manager.GetCurrentSession() {
+                            let _ = session.TryTogglePlayPauseAsync();
+                        }
+                    }
+                }
             }
         }
     });
