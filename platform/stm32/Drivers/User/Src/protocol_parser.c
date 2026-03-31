@@ -242,7 +242,7 @@ void Protocol_ParseByte(uint8_t byte) {
                             if (data_idx < parser.len) {
                                 uint8_t alpha = parser.payload_buf[data_idx++];
                                 if (alpha > 10) {
-                                    if (x_off + (int16_t)x >= 20 && x_off + (int16_t)x < 780 && y_off + (int16_t)y >= 0 && y_off + (int16_t)y < 450) {
+                                    if (x_off + (int16_t)x >= 0 && x_off + (int16_t)x < 800 && y_off + (int16_t)y >= 0 && y_off + (int16_t)y < 480) {
                                         uint8_t r = (base_r * alpha + bg_r * (255 - alpha)) / 255;
                                         uint8_t g = (base_g * alpha + bg_g * (255 - alpha)) / 255;
                                         uint8_t b = (base_b * alpha + bg_b * (255 - alpha)) / 255;

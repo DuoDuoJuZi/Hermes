@@ -82,9 +82,20 @@ int main(void)
     }
     Touch_Scan();
     if (touchInfo.flag == 1 && last_touch_flag == 0) {
-      if (touchInfo.x[0] > 90 && touchInfo.x[0] < 710 && touchInfo.y[0] > 440 && touchInfo.y[0] < 470) {
-        uint8_t cmd_play_toggle = 'P';
-        CDC_Transmit_FS(&cmd_play_toggle, 1);
+      if (touchInfo.y[0] > 360 && touchInfo.y[0] < 440) {
+        if (touchInfo.x[0] > 120 && touchInfo.x[0] < 200) {
+          uint8_t cmd = 'P';
+          CDC_Transmit_FS(&cmd, 1);
+        } else if (touchInfo.x[0] > 40 && touchInfo.x[0] < 120) {
+          uint8_t cmd = 'L';
+          CDC_Transmit_FS(&cmd, 1);
+        } else if (touchInfo.x[0] > 200 && touchInfo.x[0] < 280) {
+          uint8_t cmd = 'N';
+          CDC_Transmit_FS(&cmd, 1);
+        } else {
+          uint8_t cmd_fallback = 'E';
+          CDC_Transmit_FS(&cmd_fallback, 1);
+        }
       } else {
         uint8_t cmd_fallback = 'E';
         CDC_Transmit_FS(&cmd_fallback, 1);
