@@ -211,7 +211,7 @@ fn create_media_props_handler(tx: tokio::sync::mpsc::UnboundedSender<String>, ha
     })
 }
 
-pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<String>, song_tx: tokio::sync::broadcast::Sender<String>, progress_tx: tokio::sync::broadcast::Sender<u16>, play_state_tx: tokio::sync::broadcast::Sender<bool>) -> std::result::Result<(), Box<dyn std::error::Error>> {
+pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<String>, song_tx: tokio::sync::broadcast::Sender<String>, progress_tx: tokio::sync::broadcast::Sender<(u16, u64, u64)>, play_state_tx: tokio::sync::broadcast::Sender<bool>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
     println!("正在连接 SMTC");
@@ -334,7 +334,11 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
                                 last_play_state = Some(is_playing);
                             }
                             let progress = (pos_100ns as f64 / total as f64 * 1000.0) as u16;
-                            let _ = progress_tx_clone.send(progress.min(1000));
+                            
+                            let current_sec = (pos_100ns / 10_000_000).max(0) as u64;
+                            let total_sec = (total / 10_000_000).max(0) as u64;
+                            
+                            let _ = progress_tx_clone.send((progress.min(1000), current_sec, total_sec));
                         }
                     }
                 }

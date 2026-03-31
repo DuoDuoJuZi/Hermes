@@ -370,44 +370,156 @@ pub fn generate_meta_layers(title: &str, subtitle: &str) -> Option<Vec<TextLayer
     Some(layers)
 }
 
+/// 渲染时间文本（当前时间 / 总时间）
+pub fn generate_time_layer(time_str: &str, x: i16, y: i16) -> Option<TextLayer> {
+    let font_data = std::fs::read(r#"C:\Windows\Fonts\msyh.ttc"#).ok()?;
+    let font = Font::try_from_vec_and_index(font_data, 0)?;
+
+    let size = 16.0;
+    let scale = Scale::uniform(size);
+    let v_metrics = font.v_metrics(scale);
+    let trimmed = time_str.trim();
+
+    let mut actual_max_x = 0;
+    let mut actual_max_y = 0;
+    let mut glyphs = Vec::new();
+    let mut current_x = 0.0;
+    let block_y_asc = v_metrics.ascent;
+
+    for c in trimmed.chars() {
+        let base_glyph = font.glyph(c);
+        let scaled_glyph = base_glyph.scaled(scale);
+        let h_metrics = scaled_glyph.h_metrics();
+
+        let positioned = scaled_glyph.positioned(point(current_x, block_y_asc));
+        current_x += h_metrics.advance_width;
+
+        let bb_opt = positioned.pixel_bounding_box();
+        if let Some(bb) = bb_opt {
+            if bb.max.x > actual_max_x { actual_max_x = bb.max.x; }
+            if bb.max.y > actual_max_y { actual_max_y = bb.max.y; }
+        }
+        glyphs.push((positioned, bb_opt));
+    }
+
+    let actual_width = (actual_max_x as usize).max(1);
+    let height_ceil = (actual_max_y as usize).max(1);
+
+    let mut pixel_data = vec![0u8; actual_width * height_ceil];
+    for (glyph, bb_opt) in glyphs {
+        if let Some(bb) = bb_opt {
+            glyph.draw(|gx, gy, v| {
+                let px = bb.min.x + gx as i32;
+                let py = bb.min.y + gy as i32;
+                if px >= 0 && px < actual_width as i32 && py >= 0 && py < height_ceil as i32 {
+                    let idx = (py as usize) * actual_width + (px as usize);
+                    let val = (v * 255.0) as u8;
+                    if val > pixel_data[idx] {
+                        pixel_data[idx] = val;
+                    }
+                }
+            });
+        }
+    }
+
+    Some(TextLayer {
+        x,
+        y,
+        width: actual_width as u16,
+        height: height_ceil as u16,
+        is_active: 0,
+        pixel_data,
+    })
+}
+
 /// 打印文本像素点阵到控制台
 pub fn print_text_matrix(matrix: &TextMatrix, text: &str) {}
 
-/// 生成播放状态图标图层
-pub fn generate_play_state_layer(is_play: bool) -> TextLayer {
-    let width: usize = 30;
-    let height: usize = 30;
-    let mut pixel_data = vec![0u8; width * height];
-    
+/// 生成媒体控制图层（上一曲、播放/暂停、下一曲）
+pub fn generate_media_controls_layers(is_play: bool) -> Vec<TextLayer> {
+    let width: usize = 40;
+    let height: usize = 40;
+
+    let mut play_data = vec![0u8; width * height];
     if is_play {
-        for y in 2..28 {
-            for x in 6..12 {
-                pixel_data[y * width + x] = 255;
+        for y in 6..34 {
+            for x in 8..16 {
+                play_data[y * width + x] = 255;
             }
-            for x in 18..24 {
-                pixel_data[y * width + x] = 255;
+            for x in 24..32 {
+                play_data[y * width + x] = 255;
             }
         }
     } else {
-        for y in 2..28 {
-            let half = (y as f32 - 15.0).abs();
-            let limit = 26.0 - half * (20.0 / 13.0);
-            for x in 6..26 {
+        for y in 6..34 {
+            let half = (y as f32 - 20.0).abs();
+            let limit = 32.0 - half * (22.0 / 14.0); 
+            for x in 10..34 {
                 if (x as f32) < limit {
-                    pixel_data[y * width + x] = 255;
+                    play_data[y * width + x] = 255;
                 }
             }
         }
     }
 
-    TextLayer {
-        x: 160 - 15,
-        y: 380,
-        width: width as u16,
-        height: height as u16,
-        is_active: 1,
-        pixel_data,
+    let mut prev_data = vec![0u8; width * height];
+    for y in 10..30 {
+        for x in 6..10 { 
+            prev_data[y * width + x] = 255;
+        }
     }
+    for y in 10..30 {
+        let half = (y as f32 - 20.0).abs();
+        let left_edge = 12.0 + half * (20.0 / 10.0); 
+        for x in 10..34 {
+            if (x as f32) > left_edge {
+                prev_data[y * width + x] = 255;
+            }
+        }
+    }
+
+    let mut next_data = vec![0u8; width * height];
+    for y in 10..30 {
+        for x in 30..34 { 
+            next_data[y * width + x] = 255;
+        }
+    }
+    for y in 10..30 {
+        let half = (y as f32 - 20.0).abs();
+        let right_edge = 28.0 - half * (20.0 / 10.0); 
+        for x in 6..30 {
+            if (x as f32) < right_edge {
+                next_data[y * width + x] = 255;
+            }
+        }
+    }
+
+    vec![
+        TextLayer {
+            x: 160 - 20, 
+            y: 380,
+            width: width as u16,
+            height: height as u16,
+            is_active: 1,
+            pixel_data: play_data,
+        },
+        TextLayer {
+            x: 80 - 20,
+            y: 380,
+            width: width as u16,
+            height: height as u16,
+            is_active: 1,
+            pixel_data: prev_data,
+        },
+        TextLayer {
+            x: 240 - 20, 
+            y: 380,
+            width: width as u16,
+            height: height as u16,
+            is_active: 1,
+            pixel_data: next_data,
+        }
+    ]
 }
 
 /// 直接将字符串渲染成像素矩阵并输出到终端

@@ -36,7 +36,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let (lyric_tx, _) = broadcast::channel::<String>(100);
     let (song_tx, _) = broadcast::channel::<String>(100);
-    let (progress_tx, _) = broadcast::channel::<u16>(100);
+    let (progress_tx, _) = broadcast::channel::<(u16, u64, u64)>(100);
     let (play_state_tx, _) = broadcast::channel::<bool>(100);
     let mut song_rx = song_tx.subscribe();
     let mut terminal_lyric_rx = lyric_tx.subscribe();
@@ -112,6 +112,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                         if b == b'P' {
                                             println!("接收到播放/暂停请求");
                                             let _ = hw_event_tx.send(b'P');
+                                        } else if b == b'L' {
+                                            println!("接收到上一首请求");
+                                            let _ = hw_event_tx.send(b'L');
+                                        } else if b == b'N' {
+                                            println!("接收到下一首请求");
+                                            let _ = hw_event_tx.send(b'N');
                                         } else if b == b'E' {
                                             println!("接收到了不在范围内的点击");
                                         }
@@ -134,6 +140,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                             if b == b'P' {
                                 println!("接收到播放/暂停请求");
                                 let _ = hw_event_tx.send(b'P');
+                            } else if b == b'L' {
+                                println!("接收到上一首请求");
+                                let _ = hw_event_tx.send(b'L');
+                            } else if b == b'N' {
+                                println!("接收到下一首请求");
+                                let _ = hw_event_tx.send(b'N');
                             } else if b == b'E' {
                                 println!("接收到了不在范围内的点击");
                             }
@@ -151,10 +163,20 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         if let Ok(op) = GlobalSystemMediaTransportControlsSessionManager::RequestAsync() {
             if let Ok(manager) = op.await {
+                let mut last_hw_event_time = tokio::time::Instant::now() - tokio::time::Duration::from_secs(1);
                 while let Some(event) = hw_event_rx.recv().await {
-                    if event == b'P' {
-                        if let Ok(session) = manager.GetCurrentSession() {
-                            let _ = session.TryTogglePlayPauseAsync();
+                    let now = tokio::time::Instant::now();
+                    if now.duration_since(last_hw_event_time).as_millis() < 300 {
+                        continue;
+                    }
+                    last_hw_event_time = now;
+                    
+                    if let Ok(session) = manager.GetCurrentSession() {
+                        match event {
+                            b'P' => { let _ = session.TryTogglePlayPauseAsync(); },
+                            b'L' => { let _ = session.TrySkipPreviousAsync(); },
+                            b'N' => { let _ = session.TrySkipNextAsync(); },
+                            _ => {}
                         }
                     }
                 }
@@ -196,11 +218,31 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(async move {
         let mut last_send = tokio::time::Instant::now() - tokio::time::Duration::from_secs(1);
-        while let Ok(progress) = serial_progress_rx.recv().await {
+        while let Ok((progress, current_sec, total_sec)) = serial_progress_rx.recv().await {
             let now = tokio::time::Instant::now();
             if now.duration_since(last_send).as_millis() >= 1000 {
                 let packet = protocol::pack_progress(progress);
                 let _ = serial_tx_for_progress.send(packet);
+
+                let current_str = format!("{:02}:{:02}", current_sec / 60, current_sec % 60);
+                let total_str = format!("{:02}:{:02}", total_sec / 60, total_sec % 60);
+
+                let clear_left = protocol::pack_clear_rect(20, 445, 70, 20);
+                let _ = serial_tx_for_progress.send(clear_left);
+                let clear_right = protocol::pack_clear_rect(715, 445, 70, 20);
+                let _ = serial_tx_for_progress.send(clear_right);
+
+                if let Some(mut layer_left) = graphics::generate_time_layer(&current_str, 40, 447) {
+                    layer_left.x = 85 - layer_left.width as i16;
+                    let p = protocol::pack_text_layer(&layer_left);
+                    let _ = serial_tx_for_progress.send(p);
+                }
+
+                if let Some(layer_right) = graphics::generate_time_layer(&total_str, 715, 447) {
+                    let p = protocol::pack_text_layer(&layer_right);
+                    let _ = serial_tx_for_progress.send(p);
+                }
+
                 last_send = now;
             }
         }
@@ -211,12 +253,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(async move {
         while let Ok(is_playing) = serial_play_state_rx.recv().await {
-            let clear_packet = protocol::pack_clear_rect(160 - 15, 380, 30, 30);
+            let clear_packet = protocol::pack_clear_rect(60, 380, 220, 40);
             let _ = serial_tx_for_play_state.send(clear_packet);
             
-            let layer = graphics::generate_play_state_layer(is_playing);
-            let packet = protocol::pack_text_layer(&layer);
-            let _ = serial_tx_for_play_state.send(packet);
+            let layers = graphics::generate_media_controls_layers(is_playing);
+            for layer in layers {
+                let packet = protocol::pack_text_layer(&layer);
+                let _ = serial_tx_for_play_state.send(packet);
+            }
         }
     });
 
