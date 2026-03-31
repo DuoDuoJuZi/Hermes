@@ -95,6 +95,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
             match serial_rx.try_recv() {
                 Ok(packet) => {
+                    println!("[DEBUG] 发送数据包到下位机，字节大小: {} bytes", packet.len());
                     let mut offset = 0;
                     while offset < packet.len() {
                         let end = std::cmp::min(offset + 1024, packet.len());
