@@ -18,6 +18,12 @@ use tokio::time::sleep;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+#[derive(Debug)]
+enum HwEvent {
+    Command(u8),
+    Seek(u16),
+}
+
 mod graphics;
 mod api_process;
 mod protocol;
@@ -65,7 +71,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     });
 
     let (serial_tx, mut serial_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    let (hw_event_tx, mut hw_event_rx) = tokio::sync::mpsc::unbounded_channel::<u8>();
+    let (hw_event_tx, mut hw_event_rx) = tokio::sync::mpsc::unbounded_channel::<HwEvent>();
 
     std::thread::spawn(move || {
         let port_name = "COM5";
@@ -89,6 +95,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         };
 
         let mut read_buf = [0u8; 1024];
+        let mut rx_state = 0;
+        let mut seek_permille = 0u16;
 
         loop {
             let mut work_done = false;
@@ -110,17 +118,29 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 let to_read = std::cmp::min(bytes_to_read as usize, read_buf.len());
                                 if let Ok(n) = std::io::Read::read(&mut *port, &mut read_buf[..to_read]) {
                                     for &b in &read_buf[..n] {
-                                        if b == b'P' {
-                                            println!("接收到播放/暂停请求");
-                                            let _ = hw_event_tx.send(b'P');
-                                        } else if b == b'L' {
-                                            println!("接收到上一首请求");
-                                            let _ = hw_event_tx.send(b'L');
-                                        } else if b == b'N' {
-                                            println!("接收到下一首请求");
-                                            let _ = hw_event_tx.send(b'N');
-                                        } else if b == b'E' {
-                                            println!("接收到了不在范围内的点击");
+                                        if rx_state == 1 {
+                                            seek_permille = b as u16;
+                                            rx_state = 2;
+                                        } else if rx_state == 2 {
+                                            seek_permille |= (b as u16) << 8;
+                                            rx_state = 0;
+                                            println!("接收到跳转请求: {}/1000", seek_permille);
+                                            let _ = hw_event_tx.send(HwEvent::Seek(seek_permille));
+                                        } else {
+                                            if b == b'P' {
+                                                println!("接收到播放/暂停请求");
+                                                let _ = hw_event_tx.send(HwEvent::Command(b'P'));
+                                            } else if b == b'L' {
+                                                println!("接收到上一首请求");
+                                                let _ = hw_event_tx.send(HwEvent::Command(b'L'));
+                                            } else if b == b'N' {
+                                                println!("接收到下一首请求");
+                                                let _ = hw_event_tx.send(HwEvent::Command(b'N'));
+                                            } else if b == b'E' {
+                                                println!("接收到了不在范围内的点击");
+                                            } else if b == b'S' {
+                                                rx_state = 1;
+                                            }
                                         }
                                     }
                                 }
@@ -138,17 +158,29 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     let to_read = std::cmp::min(bytes_to_read as usize, read_buf.len());
                     if let Ok(n) = std::io::Read::read(&mut *port, &mut read_buf[..to_read]) {
                         for &b in &read_buf[..n] {
-                            if b == b'P' {
-                                println!("接收到播放/暂停请求");
-                                let _ = hw_event_tx.send(b'P');
-                            } else if b == b'L' {
-                                println!("接收到上一首请求");
-                                let _ = hw_event_tx.send(b'L');
-                            } else if b == b'N' {
-                                println!("接收到下一首请求");
-                                let _ = hw_event_tx.send(b'N');
-                            } else if b == b'E' {
-                                println!("接收到了不在范围内的点击");
+                            if rx_state == 1 {
+                                seek_permille = b as u16;
+                                rx_state = 2;
+                            } else if rx_state == 2 {
+                                seek_permille |= (b as u16) << 8;
+                                rx_state = 0;
+                                println!("接收到跳转请求: {}/1000", seek_permille);
+                                let _ = hw_event_tx.send(HwEvent::Seek(seek_permille));
+                            } else {
+                                if b == b'P' {
+                                    println!("接收到播放/暂停请求");
+                                    let _ = hw_event_tx.send(HwEvent::Command(b'P'));
+                                } else if b == b'L' {
+                                    println!("接收到上一首请求");
+                                    let _ = hw_event_tx.send(HwEvent::Command(b'L'));
+                                } else if b == b'N' {
+                                    println!("接收到下一首请求");
+                                    let _ = hw_event_tx.send(HwEvent::Command(b'N'));
+                                } else if b == b'E' {
+                                    println!("接收到了不在范围内的点击");
+                                } else if b == b'S' {
+                                    rx_state = 1;
+                                }
                             }
                         }
                     }
@@ -174,9 +206,18 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     
                     if let Ok(session) = manager.GetCurrentSession() {
                         match event {
-                            b'P' => { let _ = session.TryTogglePlayPauseAsync(); },
-                            b'L' => { let _ = session.TrySkipPreviousAsync(); },
-                            b'N' => { let _ = session.TrySkipNextAsync(); },
+                            HwEvent::Command(b'P') => { let _ = session.TryTogglePlayPauseAsync(); },
+                            HwEvent::Command(b'L') => { let _ = session.TrySkipPreviousAsync(); },
+                            HwEvent::Command(b'N') => { let _ = session.TrySkipNextAsync(); },
+                            HwEvent::Seek(permille) => {
+                                if let Ok(timeline) = session.GetTimelineProperties() {
+                                    if let Ok(end) = timeline.EndTime() {
+                                        let total = end.Duration as f64;
+                                        let target = (total * (permille as f64 / 1000.0)) as i64;
+                                        let _ = session.TryChangePlaybackPositionAsync(target);
+                                    }
+                                }
+                            },
                             _ => {}
                         }
                     }
