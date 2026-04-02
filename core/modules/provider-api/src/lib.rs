@@ -114,6 +114,18 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
     let mut current_idx = usize::MAX;
     let manual_offset_sec: f64 = 0.0;
 
+    let wait_start = tokio::time::Instant::now();
+    loop {
+        if let Ok(timeline) = session.GetTimelineProperties() {
+            if let Ok(pos) = timeline.Position() {
+                if pos.Duration < 10_000_000 || wait_start.elapsed().as_millis() > 600 {
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+    }
+
     loop {
         let mut position = -1.0;
 
@@ -360,6 +372,9 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
             if let Some(task) = current_task.take() {
                 task.abort();
             }
+            
+            let empty_lyric = "[\"\",\"\",\"\",\"\",\"\",\"加载中...\",\"\",\"\",\"\",\"\",\"\"]";
+            let _ = lyric_tx.send(empty_lyric.to_string());
 
             if let Ok(session) = manager.GetCurrentSession() {
                 match fetch_and_parse_lrc(&client, &song_id).await {
