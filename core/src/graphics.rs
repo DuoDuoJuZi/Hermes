@@ -5,8 +5,12 @@
 use image::imageops::FilterType;
 use rusttype::{point, Font, PositionedGlyph, Scale};
 use std::error::Error;
+use std::sync::OnceLock;
+use std::collections::VecDeque;
+use tokio::sync::Mutex;
 
 /// 图像矩阵数据结构，用于 STM32 等单片机的底层绘制接口
+#[derive(Clone)]
 pub struct ImageMatrix {
     pub width: u32,
     pub height: u32,
@@ -31,8 +35,51 @@ pub struct TextLayer {
     pub pixel_data: Vec<u8>,
 }
 
+struct CoverCache {
+    keys: VecDeque<String>,
+    map: std::collections::HashMap<String, ImageMatrix>,
+    max_capacity: usize,
+}
+
+impl CoverCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            keys: VecDeque::with_capacity(capacity),
+            map: std::collections::HashMap::with_capacity(capacity),
+            max_capacity: capacity,
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<ImageMatrix> {
+        self.map.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: String, value: ImageMatrix) {
+        if self.map.contains_key(&key) {
+            return;
+        }
+        if self.keys.len() >= self.max_capacity {
+            if let Some(oldest) = self.keys.pop_front() {
+                self.map.remove(&oldest);
+            }
+        }
+        self.keys.push_back(key.clone());
+        self.map.insert(key, value);
+    }
+}
+
+static COVER_CACHE: OnceLock<Mutex<CoverCache>> = OnceLock::new();
+
 /// 异步获取网易云封面并解析降采样为像素矩阵数据
-pub async fn fetch_cover_matrix(pic_url: &str) -> Result<ImageMatrix, Box<dyn Error>> {
+pub async fn fetch_cover_matrix(pic_url: &str) -> Result<ImageMatrix, Box<dyn Error + Send + Sync>> {
+    let cache_mutex = COVER_CACHE.get_or_init(|| Mutex::new(CoverCache::new(50)));
+    {
+        let cache = cache_mutex.lock().await;
+        if let Some(cached) = cache.get(pic_url) {
+            return Ok(cached);
+        }
+    }
+
     let img_bytes = reqwest::get(pic_url).await?.bytes().await?;
     let img = image::load_from_memory(&img_bytes)?.into_rgb8();
     let orig_w = img.width() as f32;
@@ -93,24 +140,24 @@ pub async fn fetch_cover_matrix(pic_url: &str) -> Result<ImageMatrix, Box<dyn Er
         dominant_center.2 = (dominant_center.2 as f32 * scale) as u8;
     }
 
-    Ok(ImageMatrix {
+    let result = ImageMatrix {
         width: resized.width(),
         height: resized.height(),
         theme_color: dominant_center,
         rgb_data,
-    })
+    };
+
+    {
+        let mut cache = cache_mutex.lock().await;
+        cache.insert(pic_url.to_string(), result.clone());
+    }
+
+    Ok(result)
 }
 
 /// 遍历像素根据 RGB 转义序列直接在控制台彩色打印输出
-pub fn print_cover_to_console(matrix: &ImageMatrix) {
+pub fn print_cover_to_console(_matrix: &ImageMatrix) {
     println!("--- 专辑封面已解析 (控制台预览由于编码问题可能乱码，此处已隐藏) ---");
-}
-
-/// 快捷方法用于合并网络下载与控制台封面的打印任务
-pub async fn fetch_and_print_cover(pic_url: &str) -> Result<(), Box<dyn Error>> {
-    let matrix = fetch_cover_matrix(pic_url).await?;
-    print_cover_to_console(&matrix);
-    Ok(())
 }
 
 /// 生成文本图层，根据字符串列表渲染带缩放及粗体样式的字体点阵层数据

@@ -68,9 +68,15 @@ int main(void)
   MX_USB_DEVICE_Init();
   Touch_Init();
 
+  LCD_SetLayer(1);
+  LCD_SetColor(0x00000000);
+  LCD_FillRect(0, 0, 800, 480);
+  LCD_SetLayer(0);
+  LCD_SetColor(0xFF000000);
+  LCD_FillRect(0, 0, 800, 480);
+
   Protocol_Init();
   HAL_UART_Receive_IT(&huart1, &rx_data, 1);
-  LCD_Clear();
   uint8_t last_touch_flag = 0;
   while (1)
   {

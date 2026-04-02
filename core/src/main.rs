@@ -44,25 +44,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (song_tx, _) = broadcast::channel::<String>(100);
     let (progress_tx, _) = broadcast::channel::<(u16, u64, u64)>(100);
     let (play_state_tx, _) = broadcast::channel::<bool>(100);
-    let mut song_rx = song_tx.subscribe();
     let mut terminal_lyric_rx = lyric_tx.subscribe();
 
     let app_state = AppState {
         lyric_tx: lyric_tx.clone(),
     };
-
-    tokio::spawn(async move {
-        while let Ok(song_id) = song_rx.recv().await {
-            let url = format!("https://music.163.com/api/song/detail/?id={}&ids=[{}]", song_id, song_id);
-            if let Ok(resp) = reqwest::get(&url).await {
-                if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    if let Some(pic) = json["songs"][0]["album"]["picUrl"].as_str() {
-                        let _ = graphics::fetch_and_print_cover(pic).await;
-                    }
-                }
-            }
-        }
-    });
 
     tokio::spawn(async move {
         while let Ok(lyric) = terminal_lyric_rx.recv().await {
@@ -375,7 +361,23 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 
                                 let artist_album = format!("{} - {}", artist, album);
 
-                                if let Ok(matrix) = graphics::fetch_cover_matrix(&pic_string).await {
+                                let (cover_res, meta_layers_res) = tokio::join!(
+                                    tokio::spawn({
+                                        let pic_string = pic_string.clone();
+                                        async move {
+                                            graphics::fetch_cover_matrix(&pic_string).await
+                                        }
+                                    }),
+                                    tokio::task::spawn_blocking({
+                                        let title = title.clone();
+                                        let artist_album = artist_album.clone();
+                                        move || {
+                                            graphics::generate_meta_layers(&title, &artist_album)
+                                        }
+                                    })
+                                );
+
+                                if let Ok(Ok(matrix)) = cover_res {
                                     graphics::print_cover_to_console(&matrix);
                                     let packet = protocol::pack_cover_matrix(&matrix);
                                     let _ = serial_tx_clone.send(packet);
@@ -383,7 +385,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 
                                 tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
 
-                                if let Some(meta_layers) = graphics::generate_meta_layers(&title, &artist_album) {
+                                if let Ok(Some(meta_layers)) = meta_layers_res {
                                     let clear_meta = protocol::pack_clear_rect(360, 0, 440, 115);
                                     let _ = serial_tx_clone.send(clear_meta);
                                     for layer in meta_layers {

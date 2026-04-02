@@ -98,7 +98,8 @@ void Draw_Cover(uint8_t *data, uint32_t length) {
 
     LCD_SetLayer(1);
     LCD_SetColor(0x00000000);
-    LCD_FillRect(0, 0, 800, 480);
+    LCD_FillRect(0, 0, 800, 380);
+    LCD_FillRect(300, 380, 500, 60);
 
     LCD_SetLayer(0);
     LCD_SetColor(global_theme_bg);
@@ -131,19 +132,19 @@ void Draw_TextGrayscale(uint8_t *data, uint32_t length) {
 
     int16_t start_x = 300 + (500 - (int16_t)width) / 2;
     if (start_x < 310) start_x = 310;
-    int16_t start_y = (480 - (int16_t)height) / 2;
+    int16_t start_y = (440 - (int16_t)height) / 2;
     if (start_y < 0) start_y = 0;
 
     LCD_SetLayer(1);
     LCD_SetColor(0x00000000);
-    LCD_FillRect(300, 0, 500, 480);
+    LCD_FillRect(300, 0, 500, 440);
 
     for (uint16_t y = 0; y < height; y++) {
         for (uint16_t x = 0; x < width; x++) {
             if (data_idx < length) {
                 uint8_t alpha = data[data_idx++];
                 if (alpha > 10) {
-                    if (start_x + x >= 300 && start_x + x < 800 && start_y + y < 480) {
+                    if (start_x + x >= 300 && start_x + x < 800 && start_y + y < 440) {
                         Safe_DrawPoint_Layer1(start_x + x, start_y + y, alpha, alpha, alpha);
                     }
                 }
@@ -158,6 +159,14 @@ void Draw_TextGrayscale(uint8_t *data, uint32_t length) {
 void Protocol_Init(void) {
     parser.state = STATE_HEAD1;
     parser.payload_buf = rx_payload_buffer;
+    
+    LCD_SetLayer(1);
+    LCD_SetColor(0x00000000);
+    LCD_FillRect(0, 0, 800, 480);
+    
+    LCD_SetLayer(0);
+    LCD_SetColor(global_theme_bg);
+    LCD_FillRect(0, 0, 800, 480);
 }
 
 /**
