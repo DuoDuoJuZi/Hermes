@@ -204,7 +204,20 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     }
                     last_hw_event_time = now;
                     
-                    if let Ok(session) = manager.GetCurrentSession() {
+                    let mut session_to_use = None;
+                    if let Ok(sessions) = manager.GetSessions() {
+                        for session in sessions {
+                            if let Ok(app_id) = session.SourceAppUserModelId() {
+                                let id_str = app_id.to_string().to_lowercase();
+                                if id_str.contains("netease") || id_str.contains("cloudmusic") {
+                                    session_to_use = Some(session);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(session) = session_to_use.or_else(|| manager.GetCurrentSession().ok()) {
                         match event {
                             HwEvent::Command(b'P') => { let _ = session.TryTogglePlayPauseAsync(); },
                             HwEvent::Command(b'L') => { let _ = session.TrySkipPreviousAsync(); },
@@ -331,53 +344,67 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     {
         tokio::spawn(async move {
+            let mut current_task: Option<tokio::task::JoinHandle<()>> = None;
             while let Ok(song_id) = song_rx_for_cover.recv().await {
-                let url = format!("https://music.163.com/api/song/detail/?id={}&ids=[{}]", song_id, song_id);
-                if let Ok(resp) = reqwest::get(&url).await {
-                    if let Ok(json) = resp.json::<serde_json::Value>().await {
-                        let mut pic_url = json["songs"][0]["album"]["picUrl"].as_str();
-                        if pic_url.is_none() { pic_url = json["songs"][0]["al"]["picUrl"].as_str(); }
+                if let Some(task) = current_task.take() {
+                    task.abort();
+                }
+                
+                let serial_tx_clone = serial_tx_for_cover.clone();
+                let resend_lyric_tx_clone = resend_lyric_tx.clone();
+                let resend_play_state_tx_clone = resend_play_state_tx.clone();
+                let last_lyric_store_clone = last_lyric_store.clone();
+                let last_play_state_store_clone = last_play_state_store.clone();
 
-                        if let Some(pic) = pic_url {
-                            let title = json["songs"][0]["name"].as_str().unwrap_or("未知歌曲").to_string();
-                            
-                            let mut artist = json["songs"][0]["artists"][0]["name"].as_str().unwrap_or("").to_string();
-                            if artist.is_empty() { artist = json["songs"][0]["ar"][0]["name"].as_str().unwrap_or("-").to_string(); }
-                            
-                            let mut album = json["songs"][0]["album"]["name"].as_str().unwrap_or("").to_string();
-                            if album.is_empty() { album = json["songs"][0]["al"]["name"].as_str().unwrap_or("-").to_string(); }
-                            
-                            let artist_album = format!("{} - {}", artist, album);
+                current_task = Some(tokio::spawn(async move {
+                    let url = format!("https://music.163.com/api/song/detail/?id={}&ids=[{}]", song_id, song_id);
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                            let mut pic_url = json["songs"][0]["album"]["picUrl"].as_str();
+                            if pic_url.is_none() { pic_url = json["songs"][0]["al"]["picUrl"].as_str(); }
 
-                            if let Ok(matrix) = graphics::fetch_cover_matrix(pic).await {
-                                graphics::print_cover_to_console(&matrix);
-                                let packet = protocol::pack_cover_matrix(&matrix);
-                                let _ = serial_tx_for_cover.send(packet);
-                            }
-                            
-                            tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+                            if let Some(pic) = pic_url {
+                                let pic_string = pic.to_string();
+                                let title = json["songs"][0]["name"].as_str().unwrap_or("未知歌曲").to_string();
+                                
+                                let mut artist = json["songs"][0]["artists"][0]["name"].as_str().unwrap_or("").to_string();
+                                if artist.is_empty() { artist = json["songs"][0]["ar"][0]["name"].as_str().unwrap_or("-").to_string(); }
+                                
+                                let mut album = json["songs"][0]["album"]["name"].as_str().unwrap_or("").to_string();
+                                if album.is_empty() { album = json["songs"][0]["al"]["name"].as_str().unwrap_or("-").to_string(); }
+                                
+                                let artist_album = format!("{} - {}", artist, album);
 
-                            if let Some(meta_layers) = graphics::generate_meta_layers(&title, &artist_album) {
-                                let clear_meta = protocol::pack_clear_rect(360, 0, 440, 115);
-                                let _ = serial_tx_for_cover.send(clear_meta);
-                                for layer in meta_layers {
-                                    let packet = protocol::pack_text_layer(&layer);
-                                    let _ = serial_tx_for_cover.send(packet);
+                                if let Ok(matrix) = graphics::fetch_cover_matrix(&pic_string).await {
+                                    graphics::print_cover_to_console(&matrix);
+                                    let packet = protocol::pack_cover_matrix(&matrix);
+                                    let _ = serial_tx_clone.send(packet);
                                 }
-                            }
+                                
+                                tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
 
-                            let last_lyric = last_lyric_store.read().await.clone();
-                            if !last_lyric.is_empty() {
-                                let _ = resend_lyric_tx.send(last_lyric);
-                            }
-                            
-                            let last_play_state = last_play_state_store.read().await.clone();
-                            if let Some(is_playing) = last_play_state {
-                                let _ = resend_play_state_tx.send(is_playing);
+                                if let Some(meta_layers) = graphics::generate_meta_layers(&title, &artist_album) {
+                                    let clear_meta = protocol::pack_clear_rect(360, 0, 440, 115);
+                                    let _ = serial_tx_clone.send(clear_meta);
+                                    for layer in meta_layers {
+                                        let packet = protocol::pack_text_layer(&layer);
+                                        let _ = serial_tx_clone.send(packet);
+                                    }
+                                }
+
+                                let last_lyric = last_lyric_store_clone.read().await.clone();
+                                if !last_lyric.is_empty() {
+                                    let _ = resend_lyric_tx_clone.send(last_lyric);
+                                }
+                                
+                                let last_play_state = last_play_state_store_clone.read().await.clone();
+                                if let Some(is_playing) = last_play_state {
+                                    let _ = resend_play_state_tx_clone.send(is_playing);
+                                }
                             }
                         }
                     }
-                }
+                }));
             }
         });
     }
@@ -430,7 +457,20 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                             let cmd = line.trim().to_lowercase();
                             if cmd.is_empty() { continue; }
 
-                            if let Ok(session) = manager.GetCurrentSession() {
+                            let mut session_to_use = None;
+                            if let Ok(sessions) = manager.GetSessions() {
+                                for session in sessions {
+                                    if let Ok(app_id) = session.SourceAppUserModelId() {
+                                        let id_str = app_id.to_string().to_lowercase();
+                                        if id_str.contains("netease") || id_str.contains("cloudmusic") {
+                                            session_to_use = Some(session);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if let Some(session) = session_to_use.or_else(|| manager.GetCurrentSession().ok()) {
                                 match cmd.as_str() {
                                     "play" => { let _ = session.TryPlayAsync(); },
                                     "pause" => { let _ = session.TryPauseAsync(); },
