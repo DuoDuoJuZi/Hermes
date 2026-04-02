@@ -103,7 +103,11 @@ int main(void)
           last_permille = permille;
         }
       } else if (last_touch_flag == 0) {
-        if (touchInfo.y[0] > 360 && touchInfo.y[0] < 440) {
+        if (touchInfo.x[0] > 320 && touchInfo.y[0] < 440) {
+          uint16_t y = touchInfo.y[0];
+          uint8_t packet[3] = {'C', y & 0xFF, (y >> 8) & 0xFF};
+          CDC_Transmit_FS(packet, 3);
+        } else if (touchInfo.y[0] > 360 && touchInfo.y[0] < 440) {
           if (touchInfo.x[0] > 120 && touchInfo.x[0] < 200) {
             uint8_t cmd = 'P';
             CDC_Transmit_FS(&cmd, 1);
