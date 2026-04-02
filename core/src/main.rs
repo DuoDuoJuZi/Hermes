@@ -22,6 +22,7 @@ use tokio::sync::RwLock;
 enum HwEvent {
     Command(u8),
     Seek(u16),
+    LyricClick(u16),
 }
 
 mod graphics;
@@ -44,6 +45,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (song_tx, _) = broadcast::channel::<String>(100);
     let (progress_tx, _) = broadcast::channel::<(u16, u64, u64)>(100);
     let (play_state_tx, _) = broadcast::channel::<bool>(100);
+
+    let current_lyric_times = Arc::new(RwLock::new(vec![0.0_f64; 11]));
+    let current_lyric_times_for_event = current_lyric_times.clone();
     let mut terminal_lyric_rx = lyric_tx.subscribe();
 
     let app_state = AppState {
@@ -83,6 +87,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut read_buf = [0u8; 1024];
         let mut rx_state = 0;
         let mut seek_permille = 0u16;
+        let mut click_y = 0u16;
 
         loop {
             let mut work_done = false;
@@ -112,6 +117,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                             rx_state = 0;
                                             println!("接收到跳转请求: {}/1000", seek_permille);
                                             let _ = hw_event_tx.send(HwEvent::Seek(seek_permille));
+                                        } else if rx_state == 3 {
+                                            click_y = b as u16;
+                                            rx_state = 4;
+                                        } else if rx_state == 4 {
+                                            click_y |= (b as u16) << 8;
+                                            rx_state = 0;
+                                            println!("接收到歌词点击请求，Y坐标: {}", click_y);
+                                            let _ = hw_event_tx.send(HwEvent::LyricClick(click_y));
                                         } else {
                                             if b == b'P' {
                                                 println!("接收到播放/暂停请求");
@@ -126,6 +139,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                                 println!("接收到了不在范围内的点击");
                                             } else if b == b'S' {
                                                 rx_state = 1;
+                                            } else if b == b'C' {
+                                                rx_state = 3;
                                             }
                                         }
                                     }
@@ -152,6 +167,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 rx_state = 0;
                                 println!("接收到跳转请求: {}/1000", seek_permille);
                                 let _ = hw_event_tx.send(HwEvent::Seek(seek_permille));
+                            } else if rx_state == 3 {
+                                click_y = b as u16;
+                                rx_state = 4;
+                            } else if rx_state == 4 {
+                                click_y |= (b as u16) << 8;
+                                rx_state = 0;
+                                println!("接收到歌词点击请求，Y坐标: {}", click_y);
+                                let _ = hw_event_tx.send(HwEvent::LyricClick(click_y));
                             } else {
                                 if b == b'P' {
                                     println!("接收到播放/暂停请求");
@@ -166,6 +189,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                     println!("接收到了不在范围内的点击");
                                 } else if b == b'S' {
                                     rx_state = 1;
+                                } else if b == b'C' {
+                                    rx_state = 3;
                                 }
                             }
                         }
@@ -217,6 +242,31 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             },
+                            HwEvent::LyricClick(y) => {
+                                let mut index = None;
+                                if y >= 75 && y < 108 { index = Some(0); }
+                                else if y >= 108 && y < 142 { index = Some(1); }
+                                else if y >= 142 && y < 176 { index = Some(2); }
+                                else if y >= 176 && y < 210 { index = Some(3); }
+                                else if y >= 210 && y < 244 { index = Some(4); }
+                                else if y >= 244 && y < 296 { index = Some(5); }
+                                else if y >= 296 && y < 329 { index = Some(6); }
+                                else if y >= 329 && y < 363 { index = Some(7); }
+                                else if y >= 363 && y < 397 { index = Some(8); }
+                                else if y >= 397 && y < 431 { index = Some(9); }
+                                else if y >= 431 && y <= 480 { index = Some(10); }
+
+                                if let Some(idx) = index {
+                                    let times = current_lyric_times_for_event.read().await;
+                                    if idx < times.len() {
+                                        let target_sec = times[idx];
+                                        if target_sec > 0.0 {
+                                            let target_100ns = (target_sec * 10_000_000.0) as i64;
+                                            let _ = session.TryChangePlaybackPositionAsync(target_100ns);
+                                        }
+                                    }
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -227,20 +277,41 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let serial_tx_for_lyric = serial_tx.clone();
     let mut serial_lyric_rx = lyric_tx.subscribe();
+    let current_lyric_times_for_rx = current_lyric_times.clone();
 
     tokio::spawn(async move {
         while let Ok(lyric) = serial_lyric_rx.recv().await {
-            let lines: Vec<String> = if let Ok(parsed) = serde_json::from_str(lyric.trim()) {
-                parsed
+            let (lines, times): (Vec<String>, Vec<f64>) = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(lyric.trim()) {
+                if let Some(arr) = parsed.as_array() {
+                    let l = arr.iter().map(|v| v.as_str().unwrap_or("").to_string()).collect();
+                    (l, vec![0.0; 11])
+                } else if let (Some(l_arr), Some(t_arr)) = (parsed["lines"].as_array(), parsed["times"].as_array()) {
+                    let l = l_arr.iter().map(|v| v.as_str().unwrap_or("").to_string()).collect();
+                    let t = t_arr.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect();
+                    (l, t)
+                } else {
+                    let mut f = Vec::with_capacity(11);
+                    for _ in 0..5 { f.push(String::new()); }
+                    f.push(lyric.trim().to_string());
+                    while f.len() < 11 { f.push(String::new()); }
+                    (f, vec![0.0; 11])
+                }
             } else {
                 let mut f = Vec::with_capacity(11);
                 for _ in 0..5 { f.push(String::new()); }
                 f.push(lyric.trim().to_string());
                 while f.len() < 11 { f.push(String::new()); }
-                f
+                (f, vec![0.0; 11])
             };
 
             if lines.iter().all(|l| l.trim().is_empty()) { continue; }
+
+            {
+                let mut guard = current_lyric_times_for_rx.write().await;
+                if times.len() == 11 {
+                    for i in 0..11 { guard[i] = times[i]; }
+                }
+            }
 
             if let Some(layers) = graphics::generate_text_layers(&lines) {
                 let clear_packet = protocol::pack_clear_rect(360, 115, 440, 305);
@@ -510,9 +581,19 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let mut rx = state.lyric_tx.subscribe();
 
     while let Ok(lyric) = rx.recv().await {
-        let mut text_to_send = if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&lyric) {
-            if parsed.len() == 11 {
-                parsed[5].clone()
+        let text_to_send = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&lyric) {
+            if let Some(arr) = parsed.as_array() {
+                if arr.len() == 11 {
+                    arr[5].as_str().unwrap_or("").to_string()
+                } else {
+                    lyric.clone()
+                }
+            } else if let Some(l_arr) = parsed["lines"].as_array() {
+                if l_arr.len() == 11 {
+                    l_arr[5].as_str().unwrap_or("").to_string()
+                } else {
+                    lyric.clone()
+                }
             } else {
                 lyric.clone()
             }
@@ -520,7 +601,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             lyric.clone()
         };
 
-        text_to_send = text_to_send.replace('\n', " - ");
+        let text_to_send = text_to_send.replace('\n', " - ");
 
         if socket.send(Message::Text(text_to_send.into())).await.is_err() {
             break;

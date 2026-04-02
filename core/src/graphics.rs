@@ -33,6 +33,7 @@ pub struct TextLayer {
     pub height: u16,
     pub is_active: u8,
     pub pixel_data: Vec<u8>,
+    pub line_index: usize,
 }
 
 struct CoverCache {
@@ -323,6 +324,7 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
             height: height_ceil as u16,
             is_active: block.is_active,
             pixel_data,
+            line_index: i,
         });
     }
 
@@ -409,6 +411,7 @@ pub fn generate_meta_layers(title: &str, subtitle: &str) -> Option<Vec<TextLayer
             height: height_ceil as u16,
             is_active,
             pixel_data,
+            line_index: 0,
         });
 
         current_y += line_height + 5.0;
@@ -476,6 +479,7 @@ pub fn generate_time_layer(time_str: &str, x: i16, y: i16) -> Option<TextLayer> 
         height: height_ceil as u16,
         is_active: 0,
         pixel_data,
+        line_index: 0,
     })
 }
 
@@ -549,6 +553,7 @@ pub fn generate_media_controls_layers(is_play: bool) -> Vec<TextLayer> {
             height: height as u16,
             is_active: 1,
             pixel_data: play_data,
+            line_index: 0,
         },
         TextLayer {
             x: 80 - 20,
@@ -557,6 +562,7 @@ pub fn generate_media_controls_layers(is_play: bool) -> Vec<TextLayer> {
             height: height as u16,
             is_active: 1,
             pixel_data: prev_data,
+            line_index: 0,
         },
         TextLayer {
             x: 240 - 20, 
@@ -565,6 +571,7 @@ pub fn generate_media_controls_layers(is_play: bool) -> Vec<TextLayer> {
             height: height as u16,
             is_active: 1,
             pixel_data: next_data,
+            line_index: 0,
         }
     ]
 }

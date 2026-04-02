@@ -163,6 +163,7 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
                 let current_lyric = &current_lyric_obj.text;
                 if !current_lyric.is_empty() {
                     let mut lines = Vec::with_capacity(11);
+                    let mut times = Vec::with_capacity(11);
 
                       let mut display_text = current_lyric.clone();
                       if let Some(trans) = &current_lyric_obj.trans {
@@ -170,22 +171,33 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
                       }                    let start_idx = if target_idx >= 5 { target_idx - 5 } else { 0 };
                     for i in start_idx..target_idx {
                         lines.push(lyrics[i].text.clone());
+                        times.push(lyrics[i].time);
                     }
 
-                    while lines.len() < 5 { lines.insert(0, String::new()); }
+                    while lines.len() < 5 { lines.insert(0, String::new()); times.insert(0, 0.0); }
                     lines.push(display_text);
+                    times.push(lyrics[target_idx].time);
 
                     for j in (target_idx + 1)..=(target_idx + 5) {
                         if j < lyrics.len() {
                             lines.push(lyrics[j].text.clone());
+                            times.push(lyrics[j].time);
                         } else {
                             lines.push(String::new());
+                            times.push(0.0);
                         }
                     }
 
-                    while lines.len() < 11 { lines.push(String::new()); }
+                    while lines.len() < 11 { lines.push(String::new()); times.push(0.0); }
 
-                    let json_str = serde_json::to_string(&lines).unwrap_or_default();
+                    #[derive(serde::Serialize)]
+                    struct LyricPayload {
+                        lines: Vec<String>,
+                        times: Vec<f64>,
+                    }
+
+                    let payload = LyricPayload { lines, times };
+                    let json_str = serde_json::to_string(&payload).unwrap_or_default();
                     println!("{}", current_lyric);
                     let _ = lyric_tx.send(json_str);
                 }
