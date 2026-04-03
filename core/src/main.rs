@@ -261,7 +261,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                     if idx < times.len() {
                                         let target_sec = times[idx];
                                         if target_sec > 0.0 {
-                                            let target_100ns = (target_sec * 10_000_000.0) as i64;
+                                            let target_100ns = (target_sec * 10_000_000.0) as i64 + 200_000;
                                             let _ = session.TryChangePlaybackPositionAsync(target_100ns);
                                         }
                                     }
