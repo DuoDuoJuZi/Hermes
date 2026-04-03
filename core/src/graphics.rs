@@ -9,6 +9,31 @@ use std::sync::OnceLock;
 use std::collections::VecDeque;
 use tokio::sync::Mutex;
 
+static FONTS: OnceLock<Vec<Font<'static>>> = OnceLock::new();
+
+fn get_fonts() -> &'static [Font<'static>] {
+    FONTS.get_or_init(|| {
+        let mut fonts = Vec::new();
+        
+        let path_msyh = r#"C:\Windows\Fonts\msyh.ttc"#;
+        if let Ok(data) = std::fs::read(path_msyh) {
+            if let Some(f) = Font::try_from_vec_and_index(data, 0) { fonts.push(f); }
+        }
+        
+        let path_malgun = r#"C:\Windows\Fonts\malgun.ttf"#;
+        if let Ok(data) = std::fs::read(path_malgun) {
+            if let Some(f) = Font::try_from_vec(data) { fonts.push(f); }
+        }
+        
+        let path_msgothic = r#"C:\Windows\Fonts\msgothic.ttc"#;
+        if let Ok(data) = std::fs::read(path_msgothic) {
+            if let Some(f) = Font::try_from_vec_and_index(data, 0) { fonts.push(f); }
+        }
+
+        fonts
+    })
+}
+
 /// 图像矩阵数据结构，用于 STM32 等单片机的底层绘制接口
 #[derive(Clone)]
 pub struct ImageMatrix {
@@ -163,8 +188,8 @@ pub fn print_cover_to_console(_matrix: &ImageMatrix) {
 
 /// 生成文本图层，根据字符串列表渲染带缩放及粗体样式的字体点阵层数据
 pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
-    let font_data = std::fs::read(r#"C:\Windows\Fonts\msyh.ttc"#).ok()?;
-    let font = Font::try_from_vec_and_index(font_data, 0)?;
+    let fonts = get_fonts();
+    if fonts.is_empty() { return None; }
 
     let max_width = 410.0;
     let center_idx = lines.len() / 2;
@@ -191,7 +216,7 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
         };
 
         let scale = Scale::uniform(size);
-        let v_metrics = font.v_metrics(scale);
+        let v_metrics = fonts[0].v_metrics(scale);
         let line_height = size * 1.3;
 
         let trimmed = line.trim();
@@ -216,7 +241,14 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
                   continue;
               }
 
-              let base_glyph = font.glyph(c);
+              let mut base_glyph = fonts[0].glyph(c);
+              for f in fonts.iter().skip(1) {
+                  if base_glyph.id().0 != 0 {
+                      break;
+                  }
+                  base_glyph = f.glyph(c);
+              }
+              
               let scaled_glyph = base_glyph.scaled(scale);
             let h_metrics = scaled_glyph.h_metrics();
 
@@ -333,8 +365,8 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
 
 /// 完全独立渲染歌曲标题与歌手专辑元数据信息
 pub fn generate_meta_layers(title: &str, subtitle: &str) -> Option<Vec<TextLayer>> {
-    let font_data = std::fs::read(r#"C:\Windows\Fonts\msyh.ttc"#).ok()?;
-    let font = Font::try_from_vec_and_index(font_data, 0)?;
+    let fonts = get_fonts();
+    if fonts.is_empty() { return None; }
 
     let max_width = 410.0;
     let start_x = 360.0;
@@ -349,7 +381,7 @@ pub fn generate_meta_layers(title: &str, subtitle: &str) -> Option<Vec<TextLayer
         }
 
         let scale = Scale::uniform(size);
-        let v_metrics = font.v_metrics(scale);
+        let v_metrics = fonts[0].v_metrics(scale);
         let line_height = size * 1.3;
 
         let mut actual_max_x = 0;
@@ -359,7 +391,14 @@ pub fn generate_meta_layers(title: &str, subtitle: &str) -> Option<Vec<TextLayer
         let block_y_asc = v_metrics.ascent;
 
         for c in trimmed.chars() {
-            let base_glyph = font.glyph(c);
+            let mut base_glyph = fonts[0].glyph(c);
+            for f in fonts.iter().skip(1) {
+                if base_glyph.id().0 != 0 {
+                    break;
+                }
+                base_glyph = f.glyph(c);
+            }
+            
             let scaled_glyph = base_glyph.scaled(scale);
             let h_metrics = scaled_glyph.h_metrics();
 
@@ -422,12 +461,12 @@ pub fn generate_meta_layers(title: &str, subtitle: &str) -> Option<Vec<TextLayer
 
 /// 渲染时间文本（当前时间 / 总时间）
 pub fn generate_time_layer(time_str: &str, x: i16, y: i16) -> Option<TextLayer> {
-    let font_data = std::fs::read(r#"C:\Windows\Fonts\msyh.ttc"#).ok()?;
-    let font = Font::try_from_vec_and_index(font_data, 0)?;
+    let fonts = get_fonts();
+    if fonts.is_empty() { return None; }
 
     let size = 16.0;
     let scale = Scale::uniform(size);
-    let v_metrics = font.v_metrics(scale);
+    let v_metrics = fonts[0].v_metrics(scale);
     let trimmed = time_str.trim();
 
     let mut actual_max_x = 0;
@@ -437,7 +476,14 @@ pub fn generate_time_layer(time_str: &str, x: i16, y: i16) -> Option<TextLayer> 
     let block_y_asc = v_metrics.ascent;
 
     for c in trimmed.chars() {
-        let base_glyph = font.glyph(c);
+        let mut base_glyph = fonts[0].glyph(c);
+        for f in fonts.iter().skip(1) {
+            if base_glyph.id().0 != 0 {
+                break;
+            }
+            base_glyph = f.glyph(c);
+        }
+        
         let scaled_glyph = base_glyph.scaled(scale);
         let h_metrics = scaled_glyph.h_metrics();
 
