@@ -14,9 +14,11 @@ pub const LYRIC_BITMAP_Y: u16 = 115;
 pub const LYRIC_BITMAP_WIDTH: u16 = 440;
 pub const LYRIC_BITMAP_HEIGHT: u16 = 305;
 pub const LYRIC_BITMAP_LINES: usize = 11;
+#[cfg(test)]
 pub const LYRIC_ANIMATION_FRAMES: usize = 5;
 const LYRIC_INACTIVE_FONT_SIZE: f32 = 26.0;
 const LYRIC_LINE_HEIGHT_FACTOR: f32 = 1.3;
+#[cfg(test)]
 const LYRIC_SCROLL_DISTANCE: i32 = 42;
 const LYRIC_PIXEL_ACTIVE_FLAG: u8 = 0x80;
 const LYRIC_PIXEL_LEVEL_MAX: u16 = 0x7F;
@@ -81,11 +83,13 @@ fn put_lyric_pixel(canvas: &mut [u8], idx: usize, pixel: u8) {
     }
 }
 
+#[cfg(test)]
 fn scale_lyric_pixel(pixel: u8, weight: u16) -> u8 {
     let (is_active, coverage) = decode_lyric_pixel(pixel);
     encode_lyric_pixel(((coverage as u16 * weight) / 255) as u8, is_active)
 }
 
+#[cfg(test)]
 fn mix_transition_pixels(prev_pixel: u8, prev_weight: u16, next_pixel: u8, next_weight: u16) -> u8 {
     let prev_scaled = scale_lyric_pixel(prev_pixel, prev_weight);
     let next_scaled = scale_lyric_pixel(next_pixel, next_weight);
@@ -99,6 +103,7 @@ fn mix_transition_pixels(prev_pixel: u8, prev_weight: u16, next_pixel: u8, next_
     }
 }
 
+#[cfg(test)]
 fn sample_shifted_pixel(bitmap: &LyricBitmap, x: usize, y: usize, y_offset: i32) -> u8 {
     let src_y = y as i32 + y_offset;
     if src_y < 0 || src_y >= bitmap.height as i32 {
@@ -108,6 +113,7 @@ fn sample_shifted_pixel(bitmap: &LyricBitmap, x: usize, y: usize, y_offset: i32)
     bitmap.pixels[src_y as usize * bitmap.width as usize + x]
 }
 
+#[cfg(test)]
 fn ease_out_cubic(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
@@ -272,6 +278,7 @@ pub fn generate_lyric_bitmap(lines: &[String]) -> LyricBitmap {
     }
 }
 
+#[cfg(test)]
 pub fn generate_lyric_bitmap_transition(
     previous: Option<&LyricBitmap>,
     final_frame: LyricBitmap,

@@ -1,7 +1,7 @@
 /**
  * @Author: DuoDuoJuZi
  * @Date: 2026-03-27
- * @brief 串口数据协议解析源代码，负责解析接收到的指令并驱动 LCD 进行绘制
+ * @brief 串口数据协议解析源代码，负责解析接收到的指令并驱�?LCD 进行绘制
  */
 #include "protocol_parser.h"
 #include "lcd_rgb.h"
@@ -34,20 +34,26 @@ static void Safe_DrawPoint_Layer0(uint16_t x, uint16_t y, uint8_t r, uint8_t g, 
  * @param g 绿色分量
  * @param b 蓝色分量
  */
-static void Safe_DrawPoint_Layer1(uint16_t x, uint16_t y, uint8_t r, uint8_t g, uint8_t b) {
-    uint32_t final_color = 0;
+static uint32_t Pack_Layer1_Color(uint8_t r, uint8_t g, uint8_t b, uint8_t alpha) {
 #if LCD_NUM_LAYERS == 2
     #if ColorMode_1 == LTDC_PIXEL_FORMAT_RGB565
-        final_color = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+        if (alpha == 0) return 0;
+        return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
     #elif ColorMode_1 == LTDC_PIXEL_FORMAT_ARGB1555
-        final_color = 0x8000 | ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+        if (alpha == 0) return 0;
+        return 0x8000 | ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+    #elif ColorMode_1 == LTDC_PIXEL_FORMAT_ARGB4444
+        return ((alpha >> 4) << 12) | ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
     #else
-        final_color = (0xFF << 24) | (r << 16) | (g << 8) | b;
+        return ((uint32_t)alpha << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
     #endif
 #else
-    final_color = (0xFF << 24) | (r << 16) | (g << 8) | b;
+    return ((uint32_t)alpha << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
 #endif
-    LCD_DrawPoint(x, y, final_color);
+}
+
+static void Safe_DrawPoint_Layer1(uint16_t x, uint16_t y, uint8_t r, uint8_t g, uint8_t b) {
+    LCD_DrawPoint(x, y, Pack_Layer1_Color(r, g, b, 255));
 }
 
 typedef enum {
@@ -82,12 +88,23 @@ static uint32_t global_theme_bg = 0xFF000000;
 #define LYRIC_BITMAP_H 305
 #define LYRIC_PIXEL_ACTIVE_FLAG 0x80
 #define LYRIC_PIXEL_LEVEL_MASK 0x7F
+#define LYRIC_STAGE_PIXELS (LYRIC_BITMAP_W * LYRIC_BITMAP_H)
+#define LYRIC_STAGE_BYTES (LYRIC_STAGE_PIXELS * BytesPerPixel_1)
+#define LYRIC_STAGE_STRIDE_BYTES (((LYRIC_STAGE_BYTES + 31) / 32) * 32)
+#define LYRIC_STAGE_A_ADDR (LCD_MemoryAdd + LCD_MemoryAdd_OFFSET + LCD_Width * LCD_Height * BytesPerPixel_1)
+#define LYRIC_STAGE_B_ADDR (LYRIC_STAGE_A_ADDR + LYRIC_STAGE_STRIDE_BYTES)
+#define LYRIC_STAGE_COMPOSE_ADDR (LYRIC_STAGE_B_ADDR + LYRIC_STAGE_STRIDE_BYTES)
+#define LYRIC_LOCAL_ANIMATION_FRAMES 5
+#define LYRIC_LOCAL_SCROLL_DISTANCE 42
+
+static uint8_t lyric_front_buffer_index = 0;
+static uint8_t lyric_front_buffer_valid = 0;
 
 
 /**
  * @brief 绘制全彩封面图像
- * @param data 图像像素及宽高数据
- * @param length 数据总长度
+ * @param data 图像像素及宽高数�?
+ * @param length 数据总长�?
  */
 void Draw_Cover(uint8_t *data, uint32_t length) {
     uint16_t width = data[0] | (data[1] << 8);
@@ -107,6 +124,7 @@ void Draw_Cover(uint8_t *data, uint32_t length) {
     LCD_SetColor(0x00000000);
     LCD_FillRect(0, 0, 800, 380);
     LCD_FillRect(300, 380, 500, 60);
+    lyric_front_buffer_valid = 0;
 
     LCD_SetLayer(0);
     LCD_SetColor(global_theme_bg);
@@ -129,8 +147,8 @@ void Draw_Cover(uint8_t *data, uint32_t length) {
 
 /**
  * @brief 绘制灰度歌词文本
- * @param data 文本点阵灰度像素及宽高数据
- * @param length 数据总长度
+ * @param data 文本点阵灰度像素及宽高数�?
+ * @param length 数据总长�?
  */
 void Draw_TextGrayscale(uint8_t *data, uint32_t length) {
     uint16_t width = data[0] | (data[1] << 8);
@@ -163,23 +181,33 @@ void Draw_TextGrayscale(uint8_t *data, uint32_t length) {
 /**
  * @brief 初始化协议解析状态机
  */
-static void Draw_LyricBitmapPixel(uint16_t dst_x, uint16_t dst_y, uint8_t encoded_pixel) {
-    if (encoded_pixel == 0) {
-        return;
-    }
-    if (dst_x < LYRIC_BITMAP_X || dst_x >= LYRIC_BITMAP_X + LYRIC_BITMAP_W ||
-        dst_y < LYRIC_BITMAP_Y || dst_y >= LYRIC_BITMAP_Y + LYRIC_BITMAP_H) {
-        return;
-    }
+static uint16_t *Lyric_Buffer(uint8_t index) {
+    return (uint16_t *)(index == 0 ? LYRIC_STAGE_A_ADDR : LYRIC_STAGE_B_ADDR);
+}
 
-    uint8_t bg_r = (global_theme_bg >> 16) & 0xFF;
-    uint8_t bg_g = (global_theme_bg >> 8) & 0xFF;
-    uint8_t bg_b = global_theme_bg & 0xFF;
+static uint16_t *Lyric_ComposeBuffer(void) {
+    return (uint16_t *)LYRIC_STAGE_COMPOSE_ADDR;
+}
+
+static void Lyric_CleanDCache(uint16_t *buffer) {
+    SCB_CleanDCache_by_Addr((uint32_t *)buffer, LYRIC_STAGE_STRIDE_BYTES);
+}
+
+static void Lyric_ClearBuffer(uint16_t *buffer) {
+    for (uint32_t i = 0; i < LYRIC_STAGE_PIXELS; i++) {
+        buffer[i] = 0;
+    }
+}
+
+static uint16_t Lyric_ConvertPixel(uint8_t encoded_pixel) {
+    if (encoded_pixel == 0) {
+        return 0;
+    }
 
     uint8_t is_active = (encoded_pixel & LYRIC_PIXEL_ACTIVE_FLAG) != 0;
     uint8_t level = encoded_pixel & LYRIC_PIXEL_LEVEL_MASK;
     if (level == 0) {
-        return;
+        return 0;
     }
 
     uint32_t base_color = is_active ? LCD_WHITE : LIGHT_GREY;
@@ -188,10 +216,127 @@ static void Draw_LyricBitmapPixel(uint16_t dst_x, uint16_t dst_y, uint8_t encode
     uint8_t base_b = base_color & 0xFF;
     uint8_t alpha = (uint8_t)(((uint16_t)level * 255 + 63) / 127);
 
+#if ColorMode_1 == LTDC_PIXEL_FORMAT_ARGB4444
+    return (uint16_t)Pack_Layer1_Color(base_r, base_g, base_b, alpha);
+#else
+    uint8_t bg_r = (global_theme_bg >> 16) & 0xFF;
+    uint8_t bg_g = (global_theme_bg >> 8) & 0xFF;
+    uint8_t bg_b = global_theme_bg & 0xFF;
     uint8_t r = (base_r * alpha + bg_r * (255 - alpha)) / 255;
     uint8_t g = (base_g * alpha + bg_g * (255 - alpha)) / 255;
     uint8_t b = (base_b * alpha + bg_b * (255 - alpha)) / 255;
-    Safe_DrawPoint_Layer1(dst_x, dst_y, r, g, b);
+    return (uint16_t)Pack_Layer1_Color(r, g, b, 255);
+#endif
+}
+
+static void Lyric_DrawPixelToBuffer(uint16_t *buffer, uint16_t dst_x, uint16_t dst_y, uint8_t encoded_pixel) {
+    if (dst_x < LYRIC_BITMAP_X || dst_x >= LYRIC_BITMAP_X + LYRIC_BITMAP_W ||
+        dst_y < LYRIC_BITMAP_Y || dst_y >= LYRIC_BITMAP_Y + LYRIC_BITMAP_H) {
+        return;
+    }
+
+    uint16_t pixel = Lyric_ConvertPixel(encoded_pixel);
+    if (pixel == 0) {
+        return;
+    }
+
+    uint16_t local_x = dst_x - LYRIC_BITMAP_X;
+    uint16_t local_y = dst_y - LYRIC_BITMAP_Y;
+    buffer[(uint32_t)local_y * LYRIC_BITMAP_W + local_x] = pixel;
+}
+
+static void Lyric_CopyBufferToVisible(uint16_t *buffer) {
+    Lyric_CleanDCache(buffer);
+
+    while (READ_BIT(LTDC->CDSR, LTDC_CDSR_VDES) == 0U) {}
+    while (READ_BIT(LTDC->CDSR, LTDC_CDSR_VDES) != 0U) {}
+
+    DMA2D->CR &= ~DMA2D_CR_START;
+    DMA2D->CR = DMA2D_M2M;
+    DMA2D->FGPFCCR = ColorMode_1;
+    DMA2D->OPFCCR = ColorMode_1;
+    DMA2D->FGMAR = (uint32_t)buffer;
+    DMA2D->OMAR = LCD_MemoryAdd + LCD_MemoryAdd_OFFSET + BytesPerPixel_1 * (LCD_Width * LYRIC_BITMAP_Y + LYRIC_BITMAP_X);
+    DMA2D->FGOR = 0;
+    DMA2D->OOR = LCD_Width - LYRIC_BITMAP_W;
+    DMA2D->NLR = (LYRIC_BITMAP_W << 16) | LYRIC_BITMAP_H;
+    DMA2D->CR |= DMA2D_CR_START;
+    while (DMA2D->CR & DMA2D_CR_START) {}
+}
+
+static uint16_t Lyric_ScalePixelAlpha(uint16_t pixel, uint8_t weight) {
+    if (pixel == 0 || weight == 0) {
+        return 0;
+    }
+
+#if ColorMode_1 == LTDC_PIXEL_FORMAT_ARGB4444
+    uint16_t alpha = (pixel >> 12) & 0x0F;
+    alpha = (alpha * weight + 127) / 255;
+    if (alpha == 0) {
+        return 0;
+    }
+    return (pixel & 0x0FFF) | (alpha << 12);
+#elif ColorMode_1 == LTDC_PIXEL_FORMAT_ARGB1555
+    return weight >= 128 ? pixel : 0;
+#else
+    return pixel;
+#endif
+}
+
+static uint8_t Lyric_PixelAlphaRank(uint16_t pixel) {
+#if ColorMode_1 == LTDC_PIXEL_FORMAT_ARGB4444
+    return (uint8_t)((pixel >> 12) & 0x0F);
+#elif ColorMode_1 == LTDC_PIXEL_FORMAT_ARGB1555
+    return (pixel & 0x8000) ? 15 : 0;
+#else
+    return pixel == 0 ? 0 : 15;
+#endif
+}
+
+static void Lyric_BlitShifted(uint16_t *dst, const uint16_t *src, int16_t y_offset, uint8_t weight) {
+    for (uint16_t src_y = 0; src_y < LYRIC_BITMAP_H; src_y++) {
+        int16_t dst_y = (int16_t)src_y + y_offset;
+        if (dst_y < 0 || dst_y >= LYRIC_BITMAP_H) {
+            continue;
+        }
+
+        uint32_t src_row = (uint32_t)src_y * LYRIC_BITMAP_W;
+        uint32_t dst_row = (uint32_t)dst_y * LYRIC_BITMAP_W;
+        for (uint16_t x = 0; x < LYRIC_BITMAP_W; x++) {
+            uint16_t pixel = Lyric_ScalePixelAlpha(src[src_row + x], weight);
+            if (pixel != 0 && Lyric_PixelAlphaRank(pixel) >= Lyric_PixelAlphaRank(dst[dst_row + x])) {
+                dst[dst_row + x] = pixel;
+            }
+        }
+    }
+}
+
+static void Lyric_CommitNextBuffer(uint8_t next_index) {
+    uint16_t *next = Lyric_Buffer(next_index);
+
+    if (!lyric_front_buffer_valid) {
+        Lyric_CopyBufferToVisible(next);
+        lyric_front_buffer_index = next_index;
+        lyric_front_buffer_valid = 1;
+        return;
+    }
+
+    uint16_t *previous = Lyric_Buffer(lyric_front_buffer_index);
+    uint16_t *compose = Lyric_ComposeBuffer();
+
+    for (uint8_t step = 1; step <= LYRIC_LOCAL_ANIMATION_FRAMES; step++) {
+        uint16_t offset = (LYRIC_LOCAL_SCROLL_DISTANCE * step + LYRIC_LOCAL_ANIMATION_FRAMES / 2) / LYRIC_LOCAL_ANIMATION_FRAMES;
+        uint8_t next_weight = (uint8_t)((255 * step + LYRIC_LOCAL_ANIMATION_FRAMES / 2) / LYRIC_LOCAL_ANIMATION_FRAMES);
+        uint8_t previous_weight = 255 - next_weight;
+        Lyric_ClearBuffer(compose);
+        Lyric_BlitShifted(compose, previous, -(int16_t)offset, previous_weight);
+        Lyric_BlitShifted(compose, next, (int16_t)(LYRIC_LOCAL_SCROLL_DISTANCE - offset), next_weight);
+        Lyric_CopyBufferToVisible(compose);
+    }
+
+    Lyric_CopyBufferToVisible(next);
+    lyric_front_buffer_index = next_index;
+    lyric_front_buffer_valid = 1;
 }
 
 static void Draw_LyricBitmap(uint8_t *data, uint32_t length) {
@@ -220,15 +365,15 @@ static void Draw_LyricBitmap(uint8_t *data, uint32_t length) {
         return;
     }
 
-    LCD_SetLayer(1);
-    LCD_SetColor(0x00000000);
-    LCD_FillRect(LYRIC_BITMAP_X, LYRIC_BITMAP_Y, LYRIC_BITMAP_W, LYRIC_BITMAP_H);
+    uint8_t next_index = lyric_front_buffer_index ^ 1;
+    uint16_t *next = Lyric_Buffer(next_index);
+    Lyric_ClearBuffer(next);
 
     if (encoding == 0) {
         uint32_t idx = 9;
         for (uint16_t row = 0; row < h; row++) {
             for (uint16_t col = 0; col < w; col++) {
-                Draw_LyricBitmapPixel(x + col, y + row, data[idx++]);
+                Lyric_DrawPixelToBuffer(next, x + col, y + row, data[idx++]);
             }
         }
     } else if (encoding == 1) {
@@ -243,12 +388,13 @@ static void Draw_LyricBitmap(uint8_t *data, uint32_t length) {
             for (uint16_t i = 0; i < run_len && pixel_pos < total; i++, pixel_pos++) {
                 uint16_t row = pixel_pos / w;
                 uint16_t col = pixel_pos % w;
-                Draw_LyricBitmapPixel(x + col, y + row, value);
+                Lyric_DrawPixelToBuffer(next, x + col, y + row, value);
             }
         }
     }
-}
 
+    Lyric_CommitNextBuffer(next_index);
+}
 void Protocol_Init(void) {
     parser.state = STATE_HEAD1;
     parser.payload_buf = rx_payload_buffer;

@@ -31,67 +31,6 @@ mod api_process;
 mod graphics;
 mod protocol;
 
-const LYRIC_ANIMATION_FULL_BUDGET_BYTES: usize = 90_000;
-const LYRIC_ANIMATION_SHORT_BUDGET_BYTES: usize = 120_000;
-
-fn pack_lyric_animation_frames(frames: &[graphics::LyricBitmap]) -> Vec<Vec<u8>> {
-    pack_lyric_animation_frames_with_budgets(
-        frames,
-        LYRIC_ANIMATION_FULL_BUDGET_BYTES,
-        LYRIC_ANIMATION_SHORT_BUDGET_BYTES,
-    )
-}
-
-fn pack_lyric_animation_frames_with_budgets(
-    frames: &[graphics::LyricBitmap],
-    full_budget: usize,
-    short_budget: usize,
-) -> Vec<Vec<u8>> {
-    if frames.is_empty() {
-        return Vec::new();
-    }
-
-    let full_packets: Vec<Vec<u8>> = frames
-        .iter()
-        .map(protocol::pack_lyric_bitmap_cropped)
-        .collect();
-    let full_total: usize = full_packets.iter().map(Vec::len).sum();
-    if full_total <= full_budget || full_packets.len() <= 2 {
-        return full_packets;
-    }
-
-    let last_index = frames.len() - 1;
-    let three_frame_indices = if frames.len() >= 5 {
-        vec![1, 3, last_index]
-    } else {
-        vec![last_index / 2, last_index]
-    };
-    let three_frame_packets = pack_selected_lyric_frames(frames, &three_frame_indices);
-    let three_frame_total: usize = three_frame_packets.iter().map(Vec::len).sum();
-    if three_frame_total <= short_budget && three_frame_packets.len() > 1 {
-        return three_frame_packets;
-    }
-
-    let two_frame_packets = pack_selected_lyric_frames(frames, &[last_index / 2, last_index]);
-    let two_frame_total: usize = two_frame_packets.iter().map(Vec::len).sum();
-    if two_frame_total <= short_budget && two_frame_packets.len() > 1 {
-        return two_frame_packets;
-    }
-
-    vec![protocol::pack_lyric_bitmap_cropped(&frames[last_index])]
-}
-
-fn pack_selected_lyric_frames(frames: &[graphics::LyricBitmap], indices: &[usize]) -> Vec<Vec<u8>> {
-    let mut unique_indices = indices.to_vec();
-    unique_indices.sort_unstable();
-    unique_indices.dedup();
-    unique_indices
-        .into_iter()
-        .filter_map(|idx| frames.get(idx))
-        .map(protocol::pack_lyric_bitmap_cropped)
-        .collect()
-}
-
 /// 维护全局异步共享的应用程序状态
 #[derive(Clone)]
 struct AppState {
@@ -129,7 +68,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     std::thread::spawn(move || {
         let port_name = "COM5";
-        let baud_rate = 115200;
+        let baud_rate = 2_000_000;
 
         println!("正在尝试连接 ({})...", port_name);
         let mut port = match serialport::new(port_name, baud_rate)
@@ -360,7 +299,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let current_lyric_times_for_rx = current_lyric_times.clone();
 
     tokio::spawn(async move {
-        let mut last_lyric_bitmap: Option<graphics::LyricBitmap> = None;
         while let Ok(lyric) = serial_lyric_rx.recv().await {
             let (lines, times): (Vec<String>, Vec<f64>) =
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(lyric.trim()) {
@@ -415,17 +353,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            let next_bitmap = graphics::generate_lyric_bitmap(&lines);
-            let frames =
-                graphics::generate_lyric_bitmap_transition(last_lyric_bitmap.as_ref(), next_bitmap);
-            let packets = pack_lyric_animation_frames(&frames);
-
-            last_lyric_bitmap = frames.last().cloned();
-
-            for packet in packets {
-                let _ = serial_tx_for_lyric.send(packet);
-                tokio::time::sleep(Duration::from_millis(60)).await;
-            }
+            let bitmap = graphics::generate_lyric_bitmap(&lines);
+            let packet = protocol::pack_lyric_bitmap_cropped(&bitmap);
+            let _ = serial_tx_for_lyric.send(packet);
         }
     });
 
@@ -764,67 +694,5 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         {
             break;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn bitmap(width: u16, height: u16, value: u8) -> graphics::LyricBitmap {
-        graphics::LyricBitmap {
-            x: graphics::LYRIC_BITMAP_X,
-            y: graphics::LYRIC_BITMAP_Y,
-            width,
-            height,
-            pixels: vec![value; width as usize * height as usize],
-        }
-    }
-
-    #[test]
-    fn lyric_animation_keeps_all_frames_when_under_budget() {
-        let frames = vec![bitmap(2, 2, 1), bitmap(2, 2, 2), bitmap(2, 2, 3)];
-
-        let packets = pack_lyric_animation_frames_with_budgets(&frames, usize::MAX, usize::MAX);
-
-        assert_eq!(packets.len(), frames.len());
-    }
-
-    #[test]
-    fn lyric_animation_keeps_short_transition_when_full_is_too_large() {
-        let frames = vec![
-            bitmap(12, 12, 1),
-            bitmap(12, 12, 2),
-            bitmap(12, 12, 3),
-            bitmap(12, 12, 4),
-            bitmap(12, 12, 5),
-        ];
-
-        let packets = pack_lyric_animation_frames_with_budgets(&frames, 1, usize::MAX);
-
-        assert!(packets.len() > 1);
-        assert!(packets.len() < frames.len());
-        assert_eq!(
-            packets.last(),
-            Some(&protocol::pack_lyric_bitmap_cropped(frames.last().unwrap()))
-        );
-    }
-
-    #[test]
-    fn lyric_animation_falls_back_to_final_frame_when_short_is_too_large() {
-        let frames = vec![
-            bitmap(12, 12, 1),
-            bitmap(12, 12, 2),
-            bitmap(12, 12, 3),
-            bitmap(12, 12, 4),
-            bitmap(12, 12, 5),
-        ];
-
-        let packets = pack_lyric_animation_frames_with_budgets(&frames, 1, 1);
-
-        assert_eq!(
-            packets,
-            vec![protocol::pack_lyric_bitmap_cropped(frames.last().unwrap())]
-        );
     }
 }
