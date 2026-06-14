@@ -162,33 +162,33 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
                 let current_lyric_obj = &lyrics[target_idx];
                 let current_lyric = &current_lyric_obj.text;
                 if !current_lyric.is_empty() {
-                    let mut lines = Vec::with_capacity(11);
+                    let mut lines = Vec::with_capacity(13);
                     let mut times = Vec::with_capacity(11);
 
                       let mut display_text = current_lyric.clone();
                       if let Some(trans) = &current_lyric_obj.trans {
                           display_text = format!("{}\n{}", display_text, trans);
-                      }                    let start_idx = if target_idx >= 5 { target_idx - 5 } else { 0 };
-                    for i in start_idx..target_idx {
-                        lines.push(lyrics[i].text.clone());
-                        times.push(lyrics[i].time);
-                    }
+                      }
 
-                    while lines.len() < 5 { lines.insert(0, String::new()); times.insert(0, 0.0); }
-                    lines.push(display_text);
-                    times.push(lyrics[target_idx].time);
-
-                    for j in (target_idx + 1)..=(target_idx + 5) {
-                        if j < lyrics.len() {
-                            lines.push(lyrics[j].text.clone());
-                            times.push(lyrics[j].time);
+                    for offset in -6isize..=6 {
+                        let idx = target_idx as isize + offset;
+                        if offset == 0 {
+                            lines.push(display_text.clone());
+                        } else if idx >= 0 {
+                            lines.push(lyrics.get(idx as usize).map(|line| line.text.clone()).unwrap_or_default());
                         } else {
                             lines.push(String::new());
-                            times.push(0.0);
                         }
                     }
 
-                    while lines.len() < 11 { lines.push(String::new()); times.push(0.0); }
+                    for offset in -5isize..=5 {
+                        let idx = target_idx as isize + offset;
+                        if idx >= 0 {
+                            times.push(lyrics.get(idx as usize).map(|line| line.time).unwrap_or(0.0));
+                        } else {
+                            times.push(0.0);
+                        }
+                    }
 
                     #[derive(serde::Serialize)]
                     struct LyricPayload {

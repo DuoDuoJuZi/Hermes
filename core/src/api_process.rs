@@ -13,7 +13,7 @@ impl NeteaseApiProcess {
     /// 启动后台服务并返回被管理的进程实例
     pub fn start() -> Result<Self, Box<dyn std::error::Error>> {
         println!("正在后台拉起 Node.js API 服务...");
-        
+
         let mut api_path = std::path::PathBuf::from("./netease-api/api.js");
         if !api_path.exists() {
             if let Ok(exe_path) = std::env::current_exe() {

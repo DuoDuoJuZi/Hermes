@@ -3,31 +3,140 @@
  * @Date: 2026-03-22
  */
 use image::imageops::FilterType;
-use rusttype::{point, Font, PositionedGlyph, Scale};
+use rusttype::{Font, PositionedGlyph, Scale, point};
+use std::collections::VecDeque;
 use std::error::Error;
 use std::sync::OnceLock;
-use std::collections::VecDeque;
 use tokio::sync::Mutex;
+
+pub const LYRIC_BITMAP_X: u16 = 360;
+pub const LYRIC_BITMAP_Y: u16 = 115;
+pub const LYRIC_BITMAP_WIDTH: u16 = 440;
+pub const LYRIC_BITMAP_HEIGHT: u16 = 305;
+pub const LYRIC_BITMAP_LINES: usize = 11;
+pub const LYRIC_ANIMATION_FRAMES: usize = 5;
+const LYRIC_INACTIVE_FONT_SIZE: f32 = 26.0;
+const LYRIC_LINE_HEIGHT_FACTOR: f32 = 1.3;
+const LYRIC_SCROLL_DISTANCE: i32 = 42;
+const LYRIC_PIXEL_ACTIVE_FLAG: u8 = 0x80;
+const LYRIC_PIXEL_LEVEL_MAX: u16 = 0x7F;
+
+#[derive(Clone)]
+pub struct LyricBitmap {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    pub pixels: Vec<u8>,
+}
+
+fn encode_lyric_pixel(coverage: u8, is_active: bool) -> u8 {
+    if coverage == 0 {
+        return 0;
+    }
+
+    let level = ((coverage as u16 * LYRIC_PIXEL_LEVEL_MAX + 127) / 255)
+        .max(1)
+        .min(LYRIC_PIXEL_LEVEL_MAX) as u8;
+    if is_active {
+        LYRIC_PIXEL_ACTIVE_FLAG | level
+    } else {
+        level
+    }
+}
+
+fn decode_lyric_pixel(pixel: u8) -> (bool, u8) {
+    if pixel == 0 {
+        return (false, 0);
+    }
+
+    let is_active = (pixel & LYRIC_PIXEL_ACTIVE_FLAG) != 0;
+    let level = if is_active {
+        pixel & !LYRIC_PIXEL_ACTIVE_FLAG
+    } else {
+        pixel
+    };
+    let coverage =
+        ((level as u16 * 255 + LYRIC_PIXEL_LEVEL_MAX / 2) / LYRIC_PIXEL_LEVEL_MAX).min(255) as u8;
+    (is_active, coverage)
+}
+
+fn put_lyric_pixel(canvas: &mut [u8], idx: usize, pixel: u8) {
+    if pixel == 0 {
+        return;
+    }
+
+    let current = canvas[idx];
+    if current == 0 {
+        canvas[idx] = pixel;
+        return;
+    }
+
+    let (current_active, current_coverage) = decode_lyric_pixel(current);
+    let (next_active, next_coverage) = decode_lyric_pixel(pixel);
+    if next_active && !current_active {
+        canvas[idx] = pixel;
+    } else if next_active == current_active && next_coverage > current_coverage {
+        canvas[idx] = pixel;
+    }
+}
+
+fn scale_lyric_pixel(pixel: u8, weight: u16) -> u8 {
+    let (is_active, coverage) = decode_lyric_pixel(pixel);
+    encode_lyric_pixel(((coverage as u16 * weight) / 255) as u8, is_active)
+}
+
+fn mix_transition_pixels(prev_pixel: u8, prev_weight: u16, next_pixel: u8, next_weight: u16) -> u8 {
+    let prev_scaled = scale_lyric_pixel(prev_pixel, prev_weight);
+    let next_scaled = scale_lyric_pixel(next_pixel, next_weight);
+    let (_, prev_coverage) = decode_lyric_pixel(prev_scaled);
+    let (_, next_coverage) = decode_lyric_pixel(next_scaled);
+
+    if next_coverage >= prev_coverage {
+        next_scaled
+    } else {
+        prev_scaled
+    }
+}
+
+fn sample_shifted_pixel(bitmap: &LyricBitmap, x: usize, y: usize, y_offset: i32) -> u8 {
+    let src_y = y as i32 + y_offset;
+    if src_y < 0 || src_y >= bitmap.height as i32 {
+        return 0;
+    }
+
+    bitmap.pixels[src_y as usize * bitmap.width as usize + x]
+}
+
+fn ease_out_cubic(t: f32) -> f32 {
+    1.0 - (1.0 - t).powi(3)
+}
 
 static FONTS: OnceLock<Vec<Font<'static>>> = OnceLock::new();
 
 fn get_fonts() -> &'static [Font<'static>] {
     FONTS.get_or_init(|| {
         let mut fonts = Vec::new();
-        
+
         let path_msyh = r#"C:\Windows\Fonts\msyh.ttc"#;
         if let Ok(data) = std::fs::read(path_msyh) {
-            if let Some(f) = Font::try_from_vec_and_index(data, 0) { fonts.push(f); }
+            if let Some(f) = Font::try_from_vec_and_index(data, 0) {
+                fonts.push(f);
+            }
         }
-        
+
         let path_malgun = r#"C:\Windows\Fonts\malgun.ttf"#;
         if let Ok(data) = std::fs::read(path_malgun) {
-            if let Some(f) = Font::try_from_vec(data) { fonts.push(f); }
+            if let Some(f) = Font::try_from_vec(data) {
+                fonts.push(f);
+            }
         }
-        
+
         let path_msgothic = r#"C:\Windows\Fonts\msgothic.ttc"#;
         if let Ok(data) = std::fs::read(path_msgothic) {
-            if let Some(f) = Font::try_from_vec_and_index(data, 0) { fonts.push(f); }
+            if let Some(f) = Font::try_from_vec_and_index(data, 0) {
+                fonts.push(f);
+            }
         }
 
         fonts
@@ -59,6 +168,143 @@ pub struct TextLayer {
     pub is_active: u8,
     pub pixel_data: Vec<u8>,
     pub line_index: usize,
+}
+
+fn normalize_single_lyric_line(line: &str) -> String {
+    let line = line.replace(['\r', '\t', '\u{3000}', '\u{00A0}'], " ");
+    let has_cjk = line.chars().any(|ch| {
+        matches!(
+            ch as u32,
+            0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF
+        )
+    });
+
+    if has_cjk {
+        line.chars().filter(|ch| !ch.is_whitespace()).collect()
+    } else {
+        line.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+}
+
+fn apply_vertical_edge_feather(
+    canvas: &mut [u8],
+    top_feather_height: usize,
+    bottom_feather_height: usize,
+) {
+    if top_feather_height == 0 && bottom_feather_height == 0 {
+        return;
+    }
+
+    let width = LYRIC_BITMAP_WIDTH as usize;
+    let height = LYRIC_BITMAP_HEIGHT as usize;
+    let top_feather_height = top_feather_height.min(height / 2);
+    let bottom_feather_height = bottom_feather_height.min(height / 2);
+
+    for y in 0..height {
+        let factor = if top_feather_height > 0 && y < top_feather_height {
+            let t = y as f32 / top_feather_height as f32;
+            t * t * (3.0 - 2.0 * t)
+        } else if bottom_feather_height > 0 && height - 1 - y < bottom_feather_height {
+            let t = (height - 1 - y) as f32 / bottom_feather_height as f32;
+            t * t * (3.0 - 2.0 * t)
+        } else {
+            continue;
+        };
+
+        for x in 0..width {
+            let idx = y * width + x;
+            let (is_active, coverage) = decode_lyric_pixel(canvas[idx]);
+            canvas[idx] = encode_lyric_pixel((coverage as f32 * factor).round() as u8, is_active);
+        }
+    }
+}
+
+pub fn generate_lyric_bitmap(lines: &[String]) -> LyricBitmap {
+    let mut canvas = vec![0u8; LYRIC_BITMAP_WIDTH as usize * LYRIC_BITMAP_HEIGHT as usize];
+    let normalized_lines: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            line.lines()
+                .map(normalize_single_lyric_line)
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect();
+
+    if let Some(layers) = generate_text_layers(&normalized_lines) {
+        for layer in layers {
+            let is_active = layer.is_active == 1;
+            for row in 0..layer.height as i32 {
+                let dst_y = layer.y as i32 + row - LYRIC_BITMAP_Y as i32;
+                if dst_y < 0 || dst_y >= LYRIC_BITMAP_HEIGHT as i32 {
+                    continue;
+                }
+
+                for col in 0..layer.width as i32 {
+                    let dst_x = layer.x as i32 + col - LYRIC_BITMAP_X as i32;
+                    if dst_x < 0 || dst_x >= LYRIC_BITMAP_WIDTH as i32 {
+                        continue;
+                    }
+
+                    let src_idx = row as usize * layer.width as usize + col as usize;
+                    let pixel = encode_lyric_pixel(layer.pixel_data[src_idx], is_active);
+                    let dst_idx = dst_y as usize * LYRIC_BITMAP_WIDTH as usize + dst_x as usize;
+                    put_lyric_pixel(&mut canvas, dst_idx, pixel);
+                }
+            }
+        }
+    }
+
+    let inactive_line_h = LYRIC_INACTIVE_FONT_SIZE * LYRIC_LINE_HEIGHT_FACTOR;
+    apply_vertical_edge_feather(
+        &mut canvas,
+        (inactive_line_h / 2.0).round() as usize,
+        inactive_line_h.round() as usize,
+    );
+
+    LyricBitmap {
+        x: LYRIC_BITMAP_X,
+        y: LYRIC_BITMAP_Y,
+        width: LYRIC_BITMAP_WIDTH,
+        height: LYRIC_BITMAP_HEIGHT,
+        pixels: canvas,
+    }
+}
+
+pub fn generate_lyric_bitmap_transition(
+    previous: Option<&LyricBitmap>,
+    final_frame: LyricBitmap,
+) -> Vec<LyricBitmap> {
+    let mut frames = Vec::with_capacity(LYRIC_ANIMATION_FRAMES);
+
+    for step in 1..=LYRIC_ANIMATION_FRAMES {
+        let progress = ease_out_cubic(step as f32 / LYRIC_ANIMATION_FRAMES as f32);
+        let next_weight = (progress * 255.0).round() as u16;
+        let prev_weight = 255 - next_weight;
+        let mut frame = final_frame.clone();
+        if let Some(previous) = previous {
+            let prev_offset = (LYRIC_SCROLL_DISTANCE as f32 * progress).round() as i32;
+            let next_offset = (LYRIC_SCROLL_DISTANCE as f32 * (1.0 - progress)).round() as i32;
+            frame.pixels.fill(0);
+
+            for y in 0..LYRIC_BITMAP_HEIGHT as usize {
+                for x in 0..LYRIC_BITMAP_WIDTH as usize {
+                    let prev_pixel = sample_shifted_pixel(previous, x, y, prev_offset);
+                    let next_pixel = sample_shifted_pixel(&final_frame, x, y, -next_offset);
+                    frame.pixels[y * LYRIC_BITMAP_WIDTH as usize + x] =
+                        mix_transition_pixels(prev_pixel, prev_weight, next_pixel, next_weight);
+                }
+            }
+        } else if step != LYRIC_ANIMATION_FRAMES {
+            for pixel in &mut frame.pixels {
+                *pixel = scale_lyric_pixel(*pixel, next_weight);
+            }
+        }
+        frames.push(frame);
+    }
+
+    frames
 }
 
 struct CoverCache {
@@ -97,7 +343,9 @@ impl CoverCache {
 static COVER_CACHE: OnceLock<Mutex<CoverCache>> = OnceLock::new();
 
 /// 异步获取网易云封面并解析降采样为像素矩阵数据
-pub async fn fetch_cover_matrix(pic_url: &str) -> Result<ImageMatrix, Box<dyn Error + Send + Sync>> {
+pub async fn fetch_cover_matrix(
+    pic_url: &str,
+) -> Result<ImageMatrix, Box<dyn Error + Send + Sync>> {
     let cache_mutex = COVER_CACHE.get_or_init(|| Mutex::new(CoverCache::new(50)));
     {
         let cache = cache_mutex.lock().await;
@@ -133,15 +381,15 @@ pub async fn fetch_cover_matrix(pic_url: &str) -> Result<ImageMatrix, Box<dyn Er
 
     for i in (0..rgb_data.len()).step_by(3) {
         let r = rgb_data[i];
-        let g = rgb_data[i+1];
-        let b = rgb_data[i+2];
+        let g = rgb_data[i + 1];
+        let b = rgb_data[i + 2];
 
         let r_bin = (r >> 3) as u16;
         let g_bin = (g >> 3) as u16;
         let b_bin = (b >> 3) as u16;
 
         let key = (r_bin << 10) | (g_bin << 5) | b_bin;
-        
+
         let entry = bins.entry(key).or_insert((0, 0, 0, 0));
         entry.0 += 1;
         entry.1 += r as u32;
@@ -153,12 +401,14 @@ pub async fn fetch_cover_matrix(pic_url: &str) -> Result<ImageMatrix, Box<dyn Er
             dominant_center = (
                 (entry.1 / entry.0) as u8,
                 (entry.2 / entry.0) as u8,
-                (entry.3 / entry.0) as u8
+                (entry.3 / entry.0) as u8,
             );
         }
     }
 
-    let luma = 0.299 * (dominant_center.0 as f32) + 0.587 * (dominant_center.1 as f32) + 0.114 * (dominant_center.2 as f32);
+    let luma = 0.299 * (dominant_center.0 as f32)
+        + 0.587 * (dominant_center.1 as f32)
+        + 0.114 * (dominant_center.2 as f32);
     if luma > 80.0 {
         let scale = 80.0 / luma;
         dominant_center.0 = (dominant_center.0 as f32 * scale) as u8;
@@ -189,7 +439,9 @@ pub fn print_cover_to_console(_matrix: &ImageMatrix) {
 /// 生成文本图层，根据字符串列表渲染带缩放及粗体样式的字体点阵层数据
 pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
     let fonts = get_fonts();
-    if fonts.is_empty() { return None; }
+    if fonts.is_empty() {
+        return None;
+    }
 
     let max_width = 410.0;
     let center_idx = lines.len() / 2;
@@ -221,7 +473,11 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
 
         let trimmed = line.trim();
         if trimmed.is_empty() {
-            blocks.push(LineBlock { glyphs: vec![], height: 0.0, is_active });
+            blocks.push(LineBlock {
+                glyphs: vec![],
+                height: 0.0,
+                is_active,
+            });
             continue;
         }
 
@@ -230,26 +486,26 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
         let mut block_height = line_height;
         let mut current_y = v_metrics.ascent;
 
-          for c in trimmed.chars() {
-              if c == '\n' {
-                  current_x = 0.0;
-                  current_y += line_height;
-                  block_height += line_height;
-                  continue;
-              }
-              if c == '\r' {
-                  continue;
-              }
+        for c in trimmed.chars() {
+            if c == '\n' {
+                current_x = 0.0;
+                current_y += line_height;
+                block_height += line_height;
+                continue;
+            }
+            if c == '\r' {
+                continue;
+            }
 
-              let mut base_glyph = fonts[0].glyph(c);
-              for f in fonts.iter().skip(1) {
-                  if base_glyph.id().0 != 0 {
-                      break;
-                  }
-                  base_glyph = f.glyph(c);
-              }
-              
-              let scaled_glyph = base_glyph.scaled(scale);
+            let mut base_glyph = fonts[0].glyph(c);
+            for f in fonts.iter().skip(1) {
+                if base_glyph.id().0 != 0 {
+                    break;
+                }
+                base_glyph = f.glyph(c);
+            }
+
+            let scaled_glyph = base_glyph.scaled(scale);
             let h_metrics = scaled_glyph.h_metrics();
 
             if current_x + h_metrics.advance_width > max_width && current_x > 0.0 {
@@ -269,7 +525,11 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
         }
 
         block_height += size * 0.3;
-        blocks.push(LineBlock { glyphs: block_glyphs, height: block_height, is_active });
+        blocks.push(LineBlock {
+            glyphs: block_glyphs,
+            height: block_height,
+            is_active,
+        });
     }
 
     if blocks.is_empty() {
@@ -306,20 +566,26 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
     let mut layers = Vec::new();
 
     for (i, block) in blocks.into_iter().enumerate() {
-        if block.glyphs.is_empty() { continue; }
-        
+        if block.glyphs.is_empty() {
+            continue;
+        }
+
         let mut actual_max_x = 0;
         let mut actual_max_y = 0;
         for g_info in &block.glyphs {
             if let Some(bb) = g_info.glyph.pixel_bounding_box() {
-                if bb.max.x > actual_max_x { actual_max_x = bb.max.x; }
-                if bb.max.y > actual_max_y { actual_max_y = bb.max.y; }
+                if bb.max.x > actual_max_x {
+                    actual_max_x = bb.max.x;
+                }
+                if bb.max.y > actual_max_y {
+                    actual_max_y = bb.max.y;
+                }
             }
         }
-        
+
         let actual_width = (actual_max_x as usize).max(1);
         let height_ceil = (actual_max_y as usize).max(1);
-        
+
         let mut pixel_data = vec![0u8; actual_width * height_ceil];
         for info in block.glyphs {
             if let Some(bb) = info.glyph.pixel_bounding_box() {
@@ -327,7 +593,8 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
                     let mut draw_pixel = |dx: i32| {
                         let px = bb.min.x + x as i32 + dx;
                         let py = bb.min.y + y as i32;
-                        if px >= 0 && px < actual_width as i32 && py >= 0 && py < height_ceil as i32 {
+                        if px >= 0 && px < actual_width as i32 && py >= 0 && py < height_ceil as i32
+                        {
                             let idx = (py as usize) * actual_width + (px as usize);
                             let val = (v * 255.0 * info.alpha_mult) as u8;
                             if val > pixel_data[idx] {
@@ -342,11 +609,8 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
                 });
             }
         }
-        
+
         let y_float = screen_y_base + y_offsets[i];
-        if y_float < 115.0 || y_float + (height_ceil as f32) > 420.0 {
-            continue;
-        }
         let start_x = 360;
 
         layers.push(TextLayer {
@@ -366,7 +630,9 @@ pub fn generate_text_layers(lines: &[String]) -> Option<Vec<TextLayer>> {
 /// 完全独立渲染歌曲标题与歌手专辑元数据信息
 pub fn generate_meta_layers(title: &str, subtitle: &str) -> Option<Vec<TextLayer>> {
     let fonts = get_fonts();
-    if fonts.is_empty() { return None; }
+    if fonts.is_empty() {
+        return None;
+    }
 
     let max_width = 410.0;
     let start_x = 360.0;
@@ -398,7 +664,7 @@ pub fn generate_meta_layers(title: &str, subtitle: &str) -> Option<Vec<TextLayer
                 }
                 base_glyph = f.glyph(c);
             }
-            
+
             let scaled_glyph = base_glyph.scaled(scale);
             let h_metrics = scaled_glyph.h_metrics();
 
@@ -411,8 +677,12 @@ pub fn generate_meta_layers(title: &str, subtitle: &str) -> Option<Vec<TextLayer
 
             let bb_opt = positioned.pixel_bounding_box();
             if let Some(bb) = bb_opt {
-                if bb.max.x > actual_max_x { actual_max_x = bb.max.x; }
-                if bb.max.y > actual_max_y { actual_max_y = bb.max.y; }
+                if bb.max.x > actual_max_x {
+                    actual_max_x = bb.max.x;
+                }
+                if bb.max.y > actual_max_y {
+                    actual_max_y = bb.max.y;
+                }
             }
             glyphs.push((positioned, bb_opt));
         }
@@ -427,7 +697,8 @@ pub fn generate_meta_layers(title: &str, subtitle: &str) -> Option<Vec<TextLayer
                     let mut draw_pixel = |dx: i32| {
                         let px = bb.min.x + x as i32 + dx;
                         let py = bb.min.y + y as i32;
-                        if px >= 0 && px < actual_width as i32 && py >= 0 && py < height_ceil as i32 {
+                        if px >= 0 && px < actual_width as i32 && py >= 0 && py < height_ceil as i32
+                        {
                             let idx = (py as usize) * actual_width + (px as usize);
                             let val = (v * 255.0) as u8;
                             if val > pixel_data[idx] {
@@ -462,7 +733,9 @@ pub fn generate_meta_layers(title: &str, subtitle: &str) -> Option<Vec<TextLayer
 /// 渲染时间文本（当前时间 / 总时间）
 pub fn generate_time_layer(time_str: &str, x: i16, y: i16) -> Option<TextLayer> {
     let fonts = get_fonts();
-    if fonts.is_empty() { return None; }
+    if fonts.is_empty() {
+        return None;
+    }
 
     let size = 16.0;
     let scale = Scale::uniform(size);
@@ -483,7 +756,7 @@ pub fn generate_time_layer(time_str: &str, x: i16, y: i16) -> Option<TextLayer> 
             }
             base_glyph = f.glyph(c);
         }
-        
+
         let scaled_glyph = base_glyph.scaled(scale);
         let h_metrics = scaled_glyph.h_metrics();
 
@@ -492,8 +765,12 @@ pub fn generate_time_layer(time_str: &str, x: i16, y: i16) -> Option<TextLayer> 
 
         let bb_opt = positioned.pixel_bounding_box();
         if let Some(bb) = bb_opt {
-            if bb.max.x > actual_max_x { actual_max_x = bb.max.x; }
-            if bb.max.y > actual_max_y { actual_max_y = bb.max.y; }
+            if bb.max.x > actual_max_x {
+                actual_max_x = bb.max.x;
+            }
+            if bb.max.y > actual_max_y {
+                actual_max_y = bb.max.y;
+            }
         }
         glyphs.push((positioned, bb_opt));
     }
@@ -550,7 +827,7 @@ pub fn generate_media_controls_layers(is_play: bool) -> Vec<TextLayer> {
     } else {
         for y in 6..34 {
             let half = (y as f32 - 20.0).abs();
-            let limit = 32.0 - half * (22.0 / 14.0); 
+            let limit = 32.0 - half * (22.0 / 14.0);
             for x in 10..34 {
                 if (x as f32) < limit {
                     play_data[y * width + x] = 255;
@@ -561,13 +838,13 @@ pub fn generate_media_controls_layers(is_play: bool) -> Vec<TextLayer> {
 
     let mut prev_data = vec![0u8; width * height];
     for y in 10..30 {
-        for x in 6..10 { 
+        for x in 6..10 {
             prev_data[y * width + x] = 255;
         }
     }
     for y in 10..30 {
         let half = (y as f32 - 20.0).abs();
-        let left_edge = 12.0 + half * (20.0 / 10.0); 
+        let left_edge = 12.0 + half * (20.0 / 10.0);
         for x in 10..34 {
             if (x as f32) > left_edge {
                 prev_data[y * width + x] = 255;
@@ -577,13 +854,13 @@ pub fn generate_media_controls_layers(is_play: bool) -> Vec<TextLayer> {
 
     let mut next_data = vec![0u8; width * height];
     for y in 10..30 {
-        for x in 30..34 { 
+        for x in 30..34 {
             next_data[y * width + x] = 255;
         }
     }
     for y in 10..30 {
         let half = (y as f32 - 20.0).abs();
-        let right_edge = 28.0 - half * (20.0 / 10.0); 
+        let right_edge = 28.0 - half * (20.0 / 10.0);
         for x in 6..30 {
             if (x as f32) < right_edge {
                 next_data[y * width + x] = 255;
@@ -593,7 +870,7 @@ pub fn generate_media_controls_layers(is_play: bool) -> Vec<TextLayer> {
 
     vec![
         TextLayer {
-            x: 160 - 20, 
+            x: 160 - 20,
             y: 380,
             width: width as u16,
             height: height as u16,
@@ -611,17 +888,158 @@ pub fn generate_media_controls_layers(is_play: bool) -> Vec<TextLayer> {
             line_index: 0,
         },
         TextLayer {
-            x: 240 - 20, 
+            x: 240 - 20,
             y: 380,
             width: width as u16,
             height: height as u16,
             is_active: 1,
             pixel_data: next_data,
             line_index: 0,
-        }
+        },
     ]
 }
 
 /// 直接将字符串渲染成像素矩阵并输出到终端
 pub fn render_text_to_console(text: &str) {}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lyric_bitmap_has_fixed_canvas_size() {
+        let lines = vec![
+            "short".to_string(),
+            "这是一句很长很长的中文歌词，用来确认第一版固定画布不会因为文本长度改变尺寸"
+                .to_string(),
+            "日本語の歌詞もここに入ります".to_string(),
+            "한국어 가사도 들어갑니다".to_string(),
+            "line 4".to_string(),
+            "active center lyric".to_string(),
+            "line 6".to_string(),
+            "line 7".to_string(),
+            "line 8".to_string(),
+            "line 9".to_string(),
+            "line 10".to_string(),
+        ];
+        let bitmap = generate_lyric_bitmap(&lines);
+        assert_eq!(bitmap.width, LYRIC_BITMAP_WIDTH);
+        assert_eq!(bitmap.height, LYRIC_BITMAP_HEIGHT);
+        assert_eq!(
+            bitmap.pixels.len(),
+            LYRIC_BITMAP_WIDTH as usize * LYRIC_BITMAP_HEIGHT as usize
+        );
+    }
+
+    #[test]
+    fn lyric_bitmap_accepts_overscan_lines() {
+        let lines: Vec<String> = (0..LYRIC_BITMAP_LINES + 2)
+            .map(|i| format!("overscan lyric line {i}"))
+            .collect();
+        let bitmap = generate_lyric_bitmap(&lines);
+
+        assert_eq!(bitmap.width, LYRIC_BITMAP_WIDTH);
+        assert_eq!(bitmap.height, LYRIC_BITMAP_HEIGHT);
+        assert!(
+            bitmap
+                .pixels
+                .iter()
+                .any(|&pixel| (pixel & LYRIC_PIXEL_ACTIVE_FLAG) != 0)
+        );
+        assert!(
+            bitmap
+                .pixels
+                .iter()
+                .any(|&pixel| pixel > 0 && pixel < LYRIC_PIXEL_ACTIVE_FLAG)
+        );
+    }
+
+    #[test]
+    fn lyric_bitmap_feathers_edge_lines() {
+        let lines: Vec<String> = (0..LYRIC_BITMAP_LINES + 2)
+            .map(|i| format!("lyric line {i}"))
+            .collect();
+        let bitmap = generate_lyric_bitmap(&lines);
+        let width = LYRIC_BITMAP_WIDTH as usize;
+
+        assert!(bitmap.pixels[..width].iter().all(|&pixel| pixel == 0));
+        assert!(bitmap.pixels[..width * 64].iter().any(|&pixel| pixel > 0));
+        assert!(
+            bitmap.pixels[width * (LYRIC_BITMAP_HEIGHT as usize - 1)..]
+                .iter()
+                .all(|&pixel| pixel == 0)
+        );
+        assert!(
+            bitmap.pixels[width * (LYRIC_BITMAP_HEIGHT as usize - 64)..]
+                .iter()
+                .any(|&pixel| pixel > 0)
+        );
+    }
+
+    #[test]
+    fn lyric_bitmap_preserves_active_and_inactive_color_tags() {
+        let lines: Vec<String> = (0..LYRIC_BITMAP_LINES)
+            .map(|i| format!("lyric line {i}"))
+            .collect();
+        let bitmap = generate_lyric_bitmap(&lines);
+
+        assert!(
+            bitmap
+                .pixels
+                .iter()
+                .any(|&pixel| (pixel & LYRIC_PIXEL_ACTIVE_FLAG) != 0)
+        );
+        assert!(
+            bitmap
+                .pixels
+                .iter()
+                .any(|&pixel| pixel > 0 && pixel < LYRIC_PIXEL_ACTIVE_FLAG)
+        );
+    }
+
+    #[test]
+    fn lyric_transition_preserves_color_tags() {
+        let previous = generate_lyric_bitmap(
+            &(0..LYRIC_BITMAP_LINES)
+                .map(|i| format!("previous lyric line {i}"))
+                .collect::<Vec<_>>(),
+        );
+        let final_frame = generate_lyric_bitmap(
+            &(0..LYRIC_BITMAP_LINES)
+                .map(|i| format!("next lyric line {i}"))
+                .collect::<Vec<_>>(),
+        );
+
+        let frames = generate_lyric_bitmap_transition(Some(&previous), final_frame.clone());
+
+        assert!(frames.iter().all(|frame| {
+            frame
+                .pixels
+                .iter()
+                .any(|&pixel| (pixel & LYRIC_PIXEL_ACTIVE_FLAG) != 0)
+        }));
+        assert!(frames.iter().all(|frame| {
+            frame
+                .pixels
+                .iter()
+                .any(|&pixel| pixel > 0 && pixel < LYRIC_PIXEL_ACTIVE_FLAG)
+        }));
+        assert_ne!(
+            frames.first().map(|frame| &frame.pixels),
+            Some(&final_frame.pixels)
+        );
+        assert_eq!(
+            frames.last().map(|frame| &frame.pixels),
+            Some(&final_frame.pixels)
+        );
+    }
+
+    #[test]
+    fn lyric_normalization_removes_cjk_internal_spaces_but_keeps_latin_word_spaces() {
+        assert_eq!(normalize_single_lyric_line("你  好　世\t界"), "你好世界");
+        assert_eq!(
+            normalize_single_lyric_line("hello   beautiful\tworld"),
+            "hello beautiful world"
+        );
+    }
+}

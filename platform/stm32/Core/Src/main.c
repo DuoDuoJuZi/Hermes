@@ -34,6 +34,10 @@
 #include "usbd_cdc_if.h"
 
 #define UART_RX_BUF_SIZE 16384
+#define LYRIC_TOUCH_X 360
+#define LYRIC_TOUCH_Y 115
+#define LYRIC_TOUCH_W 440
+#define LYRIC_TOUCH_H 305
 uint8_t uart_rx_buf[UART_RX_BUF_SIZE];
 volatile uint32_t uart_rx_head = 0;
 volatile uint32_t uart_rx_tail = 0;
@@ -103,7 +107,8 @@ int main(void)
           last_permille = permille;
         }
       } else if (last_touch_flag == 0) {
-        if (touchInfo.x[0] > 320 && touchInfo.y[0] < 440) {
+        if (touchInfo.x[0] >= LYRIC_TOUCH_X && touchInfo.x[0] < LYRIC_TOUCH_X + LYRIC_TOUCH_W &&
+            touchInfo.y[0] >= LYRIC_TOUCH_Y && touchInfo.y[0] < LYRIC_TOUCH_Y + LYRIC_TOUCH_H) {
           uint16_t y = touchInfo.y[0];
           uint8_t packet[3] = {'C', y & 0xFF, (y >> 8) & 0xFF};
           CDC_Transmit_FS(packet, 3);

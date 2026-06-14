@@ -1,22 +1,24 @@
-﻿/**
+/**
  * @Author: DuoDuoJuZi
  * @Date: 2026-03-21
  */
-
 use axum::{
-    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State},
-    routing::get,
     Router,
+    extract::{
+        State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
+    routing::get,
 };
 use std::net::SocketAddr;
-use tokio::net::TcpListener;
-use tokio::sync::broadcast;
-use tokio::io::{self, AsyncBufReadExt, BufReader};
-use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
-use std::time::Duration;
-use tokio::time::sleep;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::io::{self, AsyncBufReadExt, BufReader};
+use tokio::net::TcpListener;
 use tokio::sync::RwLock;
+use tokio::sync::broadcast;
+use tokio::time::sleep;
+use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
 
 #[derive(Debug)]
 enum HwEvent {
@@ -25,9 +27,70 @@ enum HwEvent {
     LyricClick(u16),
 }
 
-mod graphics;
 mod api_process;
+mod graphics;
 mod protocol;
+
+const LYRIC_ANIMATION_FULL_BUDGET_BYTES: usize = 90_000;
+const LYRIC_ANIMATION_SHORT_BUDGET_BYTES: usize = 120_000;
+
+fn pack_lyric_animation_frames(frames: &[graphics::LyricBitmap]) -> Vec<Vec<u8>> {
+    pack_lyric_animation_frames_with_budgets(
+        frames,
+        LYRIC_ANIMATION_FULL_BUDGET_BYTES,
+        LYRIC_ANIMATION_SHORT_BUDGET_BYTES,
+    )
+}
+
+fn pack_lyric_animation_frames_with_budgets(
+    frames: &[graphics::LyricBitmap],
+    full_budget: usize,
+    short_budget: usize,
+) -> Vec<Vec<u8>> {
+    if frames.is_empty() {
+        return Vec::new();
+    }
+
+    let full_packets: Vec<Vec<u8>> = frames
+        .iter()
+        .map(protocol::pack_lyric_bitmap_cropped)
+        .collect();
+    let full_total: usize = full_packets.iter().map(Vec::len).sum();
+    if full_total <= full_budget || full_packets.len() <= 2 {
+        return full_packets;
+    }
+
+    let last_index = frames.len() - 1;
+    let three_frame_indices = if frames.len() >= 5 {
+        vec![1, 3, last_index]
+    } else {
+        vec![last_index / 2, last_index]
+    };
+    let three_frame_packets = pack_selected_lyric_frames(frames, &three_frame_indices);
+    let three_frame_total: usize = three_frame_packets.iter().map(Vec::len).sum();
+    if three_frame_total <= short_budget && three_frame_packets.len() > 1 {
+        return three_frame_packets;
+    }
+
+    let two_frame_packets = pack_selected_lyric_frames(frames, &[last_index / 2, last_index]);
+    let two_frame_total: usize = two_frame_packets.iter().map(Vec::len).sum();
+    if two_frame_total <= short_budget && two_frame_packets.len() > 1 {
+        return two_frame_packets;
+    }
+
+    vec![protocol::pack_lyric_bitmap_cropped(&frames[last_index])]
+}
+
+fn pack_selected_lyric_frames(frames: &[graphics::LyricBitmap], indices: &[usize]) -> Vec<Vec<u8>> {
+    let mut unique_indices = indices.to_vec();
+    unique_indices.sort_unstable();
+    unique_indices.dedup();
+    unique_indices
+        .into_iter()
+        .filter_map(|idx| frames.get(idx))
+        .map(protocol::pack_lyric_bitmap_cropped)
+        .collect()
+}
 
 /// 维护全局异步共享的应用程序状态
 #[derive(Clone)]
@@ -38,7 +101,8 @@ struct AppState {
 /// 后台守护进程核心入口，初始化 WebSocket 服务与 SMTC 监听，建立多线程异步通信循环
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let api_process = api_process::NeteaseApiProcess::start().expect("拉起 Node 服务失败，请检查是否已安装 Node.js");
+    let api_process = api_process::NeteaseApiProcess::start()
+        .expect("拉起 Node 服务失败，请检查是否已安装 Node.js");
     sleep(Duration::from_secs(2)).await;
 
     let (lyric_tx, _) = broadcast::channel::<String>(100);
@@ -77,7 +141,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 let _ = p.write_data_terminal_ready(true);
                 let _ = p.write_request_to_send(true);
                 p
-            },
+            }
             Err(e) => {
                 eprintln!("串口打开失败: {}", e);
                 return;
@@ -94,7 +158,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
             match serial_rx.try_recv() {
                 Ok(packet) => {
-                    println!("[DEBUG] 发送数据包到下位机，字节大小: {} bytes", packet.len());
+                    println!(
+                        "[DEBUG] 发送数据包到下位机，字节大小: {} bytes",
+                        packet.len()
+                    );
                     let mut offset = 0;
                     while offset < packet.len() {
                         let end = std::cmp::min(offset + 1024, packet.len());
@@ -107,7 +174,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                         if let Ok(bytes_to_read) = port.bytes_to_read() {
                             if bytes_to_read > 0 {
                                 let to_read = std::cmp::min(bytes_to_read as usize, read_buf.len());
-                                if let Ok(n) = std::io::Read::read(&mut *port, &mut read_buf[..to_read]) {
+                                if let Ok(n) =
+                                    std::io::Read::read(&mut *port, &mut read_buf[..to_read])
+                                {
                                     for &b in &read_buf[..n] {
                                         if rx_state == 1 {
                                             seek_permille = b as u16;
@@ -207,14 +276,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         if let Ok(op) = GlobalSystemMediaTransportControlsSessionManager::RequestAsync() {
             if let Ok(manager) = op.await {
-                let mut last_hw_event_time = tokio::time::Instant::now() - tokio::time::Duration::from_secs(1);
+                let mut last_hw_event_time =
+                    tokio::time::Instant::now() - tokio::time::Duration::from_secs(1);
                 while let Some(event) = hw_event_rx.recv().await {
                     let now = tokio::time::Instant::now();
                     if now.duration_since(last_hw_event_time).as_millis() < 300 {
                         continue;
                     }
                     last_hw_event_time = now;
-                    
+
                     let mut session_to_use = None;
                     if let Ok(sessions) = manager.GetSessions() {
                         for session in sessions {
@@ -228,11 +298,19 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                         }
                     }
 
-                    if let Some(session) = session_to_use.or_else(|| manager.GetCurrentSession().ok()) {
+                    if let Some(session) =
+                        session_to_use.or_else(|| manager.GetCurrentSession().ok())
+                    {
                         match event {
-                            HwEvent::Command(b'P') => { let _ = session.TryTogglePlayPauseAsync(); },
-                            HwEvent::Command(b'L') => { let _ = session.TrySkipPreviousAsync(); },
-                            HwEvent::Command(b'N') => { let _ = session.TrySkipNextAsync(); },
+                            HwEvent::Command(b'P') => {
+                                let _ = session.TryTogglePlayPauseAsync();
+                            }
+                            HwEvent::Command(b'L') => {
+                                let _ = session.TrySkipPreviousAsync();
+                            }
+                            HwEvent::Command(b'N') => {
+                                let _ = session.TrySkipNextAsync();
+                            }
                             HwEvent::Seek(permille) => {
                                 if let Ok(timeline) = session.GetTimelineProperties() {
                                     if let Ok(end) = timeline.EndTime() {
@@ -241,28 +319,30 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                         let _ = session.TryChangePlaybackPositionAsync(target);
                                     }
                                 }
-                            },
+                            }
                             HwEvent::LyricClick(y) => {
-                                let mut index = None;
-                                if y >= 75 && y < 108 { index = Some(0); }
-                                else if y >= 108 && y < 142 { index = Some(1); }
-                                else if y >= 142 && y < 176 { index = Some(2); }
-                                else if y >= 176 && y < 210 { index = Some(3); }
-                                else if y >= 210 && y < 244 { index = Some(4); }
-                                else if y >= 244 && y < 296 { index = Some(5); }
-                                else if y >= 296 && y < 329 { index = Some(6); }
-                                else if y >= 329 && y < 363 { index = Some(7); }
-                                else if y >= 363 && y < 397 { index = Some(8); }
-                                else if y >= 397 && y < 431 { index = Some(9); }
-                                else if y >= 431 && y <= 480 { index = Some(10); }
+                                let index = if y >= graphics::LYRIC_BITMAP_Y
+                                    && y < graphics::LYRIC_BITMAP_Y + graphics::LYRIC_BITMAP_HEIGHT
+                                {
+                                    Some(
+                                        ((y - graphics::LYRIC_BITMAP_Y) as usize
+                                            * graphics::LYRIC_BITMAP_LINES
+                                            / graphics::LYRIC_BITMAP_HEIGHT as usize)
+                                            .min(graphics::LYRIC_BITMAP_LINES - 1),
+                                    )
+                                } else {
+                                    None
+                                };
 
                                 if let Some(idx) = index {
                                     let times = current_lyric_times_for_event.read().await;
                                     if idx < times.len() {
                                         let target_sec = times[idx];
                                         if target_sec > 0.0 {
-                                            let target_100ns = (target_sec * 10_000_000.0) as i64 + 200_000;
-                                            let _ = session.TryChangePlaybackPositionAsync(target_100ns);
+                                            let target_100ns =
+                                                (target_sec * 10_000_000.0) as i64 + 200_000;
+                                            let _ = session
+                                                .TryChangePlaybackPositionAsync(target_100ns);
                                         }
                                     }
                                 }
@@ -280,47 +360,71 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let current_lyric_times_for_rx = current_lyric_times.clone();
 
     tokio::spawn(async move {
+        let mut last_lyric_bitmap: Option<graphics::LyricBitmap> = None;
         while let Ok(lyric) = serial_lyric_rx.recv().await {
-            let (lines, times): (Vec<String>, Vec<f64>) = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(lyric.trim()) {
-                if let Some(arr) = parsed.as_array() {
-                    let l = arr.iter().map(|v| v.as_str().unwrap_or("").to_string()).collect();
-                    (l, vec![0.0; 11])
-                } else if let (Some(l_arr), Some(t_arr)) = (parsed["lines"].as_array(), parsed["times"].as_array()) {
-                    let l = l_arr.iter().map(|v| v.as_str().unwrap_or("").to_string()).collect();
-                    let t = t_arr.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect();
-                    (l, t)
+            let (lines, times): (Vec<String>, Vec<f64>) =
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(lyric.trim()) {
+                    if let Some(arr) = parsed.as_array() {
+                        let l = arr
+                            .iter()
+                            .map(|v| v.as_str().unwrap_or("").to_string())
+                            .collect();
+                        (l, vec![0.0; 11])
+                    } else if let (Some(l_arr), Some(t_arr)) =
+                        (parsed["lines"].as_array(), parsed["times"].as_array())
+                    {
+                        let l = l_arr
+                            .iter()
+                            .map(|v| v.as_str().unwrap_or("").to_string())
+                            .collect();
+                        let t = t_arr.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect();
+                        (l, t)
+                    } else {
+                        let mut f = Vec::with_capacity(11);
+                        for _ in 0..5 {
+                            f.push(String::new());
+                        }
+                        f.push(lyric.trim().to_string());
+                        while f.len() < 11 {
+                            f.push(String::new());
+                        }
+                        (f, vec![0.0; 11])
+                    }
                 } else {
                     let mut f = Vec::with_capacity(11);
-                    for _ in 0..5 { f.push(String::new()); }
+                    for _ in 0..5 {
+                        f.push(String::new());
+                    }
                     f.push(lyric.trim().to_string());
-                    while f.len() < 11 { f.push(String::new()); }
+                    while f.len() < 11 {
+                        f.push(String::new());
+                    }
                     (f, vec![0.0; 11])
-                }
-            } else {
-                let mut f = Vec::with_capacity(11);
-                for _ in 0..5 { f.push(String::new()); }
-                f.push(lyric.trim().to_string());
-                while f.len() < 11 { f.push(String::new()); }
-                (f, vec![0.0; 11])
-            };
+                };
 
-            if lines.iter().all(|l| l.trim().is_empty()) { continue; }
+            if lines.iter().all(|l| l.trim().is_empty()) {
+                continue;
+            }
 
             {
                 let mut guard = current_lyric_times_for_rx.write().await;
                 if times.len() == 11 {
-                    for i in 0..11 { guard[i] = times[i]; }
+                    for i in 0..11 {
+                        guard[i] = times[i];
+                    }
                 }
             }
 
-            if let Some(layers) = graphics::generate_text_layers(&lines) {
-                let clear_packet = protocol::pack_clear_rect(360, 115, 440, 305);
-                let _ = serial_tx_for_lyric.send(clear_packet);
+            let next_bitmap = graphics::generate_lyric_bitmap(&lines);
+            let frames =
+                graphics::generate_lyric_bitmap_transition(last_lyric_bitmap.as_ref(), next_bitmap);
+            let packets = pack_lyric_animation_frames(&frames);
 
-                for layer in layers {
-                    let packet = protocol::pack_text_layer(&layer);
-                    let _ = serial_tx_for_lyric.send(packet);
-                }
+            last_lyric_bitmap = frames.last().cloned();
+
+            for packet in packets {
+                let _ = serial_tx_for_lyric.send(packet);
+                tokio::time::sleep(Duration::from_millis(60)).await;
             }
         }
     });
@@ -367,7 +471,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         while let Ok(is_playing) = serial_play_state_rx.recv().await {
             let clear_packet = protocol::pack_clear_rect(60, 380, 220, 40);
             let _ = serial_tx_for_play_state.send(clear_packet);
-            
+
             let layers = graphics::generate_media_controls_layers(is_playing);
             for layer in layers {
                 let packet = protocol::pack_text_layer(&layer);
@@ -393,7 +497,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let last_lyric_store = Arc::new(RwLock::new(String::new()));
     let last_lyric_store_for_update = last_lyric_store.clone();
-    let mut lyric_rx_for_store = lyric_tx.subscribe();    tokio::spawn(async move {
+    let mut lyric_rx_for_store = lyric_tx.subscribe();
+    tokio::spawn(async move {
         while let Ok(lyric) = lyric_rx_for_store.recv().await {
             *last_lyric_store_for_update.write().await = lyric;
         }
@@ -406,7 +511,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 if let Some(task) = current_task.take() {
                     task.abort();
                 }
-                
+
                 let serial_tx_clone = serial_tx_for_cover.clone();
                 let resend_lyric_tx_clone = resend_lyric_tx.clone();
                 let resend_play_state_tx_clone = resend_play_state_tx.clone();
@@ -414,30 +519,52 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 let last_play_state_store_clone = last_play_state_store.clone();
 
                 current_task = Some(tokio::spawn(async move {
-                    let url = format!("https://music.163.com/api/song/detail/?id={}&ids=[{}]", song_id, song_id);
+                    let url = format!(
+                        "https://music.163.com/api/song/detail/?id={}&ids=[{}]",
+                        song_id, song_id
+                    );
                     if let Ok(resp) = reqwest::get(&url).await {
                         if let Ok(json) = resp.json::<serde_json::Value>().await {
                             let mut pic_url = json["songs"][0]["album"]["picUrl"].as_str();
-                            if pic_url.is_none() { pic_url = json["songs"][0]["al"]["picUrl"].as_str(); }
+                            if pic_url.is_none() {
+                                pic_url = json["songs"][0]["al"]["picUrl"].as_str();
+                            }
 
                             if let Some(pic) = pic_url {
                                 let pic_string = pic.to_string();
-                                let title = json["songs"][0]["name"].as_str().unwrap_or("未知歌曲").to_string();
-                                
-                                let mut artist = json["songs"][0]["artists"][0]["name"].as_str().unwrap_or("").to_string();
-                                if artist.is_empty() { artist = json["songs"][0]["ar"][0]["name"].as_str().unwrap_or("-").to_string(); }
-                                
-                                let mut album = json["songs"][0]["album"]["name"].as_str().unwrap_or("").to_string();
-                                if album.is_empty() { album = json["songs"][0]["al"]["name"].as_str().unwrap_or("-").to_string(); }
-                                
+                                let title = json["songs"][0]["name"]
+                                    .as_str()
+                                    .unwrap_or("未知歌曲")
+                                    .to_string();
+
+                                let mut artist = json["songs"][0]["artists"][0]["name"]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .to_string();
+                                if artist.is_empty() {
+                                    artist = json["songs"][0]["ar"][0]["name"]
+                                        .as_str()
+                                        .unwrap_or("-")
+                                        .to_string();
+                                }
+
+                                let mut album = json["songs"][0]["album"]["name"]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .to_string();
+                                if album.is_empty() {
+                                    album = json["songs"][0]["al"]["name"]
+                                        .as_str()
+                                        .unwrap_or("-")
+                                        .to_string();
+                                }
+
                                 let artist_album = format!("{} - {}", artist, album);
 
                                 let (cover_res, meta_layers_res) = tokio::join!(
                                     tokio::spawn({
                                         let pic_string = pic_string.clone();
-                                        async move {
-                                            graphics::fetch_cover_matrix(&pic_string).await
-                                        }
+                                        async move { graphics::fetch_cover_matrix(&pic_string).await }
                                     }),
                                     tokio::task::spawn_blocking({
                                         let title = title.clone();
@@ -453,7 +580,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                     let packet = protocol::pack_cover_matrix(&matrix);
                                     let _ = serial_tx_clone.send(packet);
                                 }
-                                
+
                                 tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
 
                                 if let Ok(Some(meta_layers)) = meta_layers_res {
@@ -469,8 +596,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 if !last_lyric.is_empty() {
                                     let _ = resend_lyric_tx_clone.send(last_lyric);
                                 }
-                                
-                                let last_play_state = last_play_state_store_clone.read().await.clone();
+
+                                let last_play_state =
+                                    last_play_state_store_clone.read().await.clone();
                                 if let Some(is_playing) = last_play_state {
                                     let _ = resend_play_state_tx_clone.send(is_playing);
                                 }
@@ -511,7 +639,13 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let progress_tx_clone = progress_tx.clone();
         let play_state_tx_clone = play_state_tx.clone();
         tokio::spawn(async move {
-            let _ = provider_api::listen_smtc_and_sync(tx_clone, song_tx_clone, progress_tx_clone, play_state_tx_clone).await;
+            let _ = provider_api::listen_smtc_and_sync(
+                tx_clone,
+                song_tx_clone,
+                progress_tx_clone,
+                play_state_tx_clone,
+            )
+            .await;
         });
     }
 
@@ -528,14 +662,18 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                         Ok(0) => break,
                         Ok(_) => {
                             let cmd = line.trim().to_lowercase();
-                            if cmd.is_empty() { continue; }
+                            if cmd.is_empty() {
+                                continue;
+                            }
 
                             let mut session_to_use = None;
                             if let Ok(sessions) = manager.GetSessions() {
                                 for session in sessions {
                                     if let Ok(app_id) = session.SourceAppUserModelId() {
                                         let id_str = app_id.to_string().to_lowercase();
-                                        if id_str.contains("netease") || id_str.contains("cloudmusic") {
+                                        if id_str.contains("netease")
+                                            || id_str.contains("cloudmusic")
+                                        {
                                             session_to_use = Some(session);
                                             break;
                                         }
@@ -543,14 +681,26 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
 
-                            if let Some(session) = session_to_use.or_else(|| manager.GetCurrentSession().ok()) {
+                            if let Some(session) =
+                                session_to_use.or_else(|| manager.GetCurrentSession().ok())
+                            {
                                 match cmd.as_str() {
-                                    "play" => { let _ = session.TryPlayAsync(); },
-                                    "pause" => { let _ = session.TryPauseAsync(); },
-                                    "stop" => { let _ = session.TryStopAsync(); },
-                                    "next" => { let _ = session.TrySkipNextAsync(); },
-                                    "previous" | "prev" => { let _ = session.TrySkipPreviousAsync(); },
-                                    _ => {},
+                                    "play" => {
+                                        let _ = session.TryPlayAsync();
+                                    }
+                                    "pause" => {
+                                        let _ = session.TryPauseAsync();
+                                    }
+                                    "stop" => {
+                                        let _ = session.TryStopAsync();
+                                    }
+                                    "next" => {
+                                        let _ = session.TrySkipNextAsync();
+                                    }
+                                    "previous" | "prev" => {
+                                        let _ = session.TrySkipPreviousAsync();
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -563,9 +713,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     tokio::signal::ctrl_c().await.unwrap();
 
-    drop(api_process); 
+    drop(api_process);
 
-    std::process::exit(0); 
+    std::process::exit(0);
 }
 
 /// 接受并拦截 HTTP 路由请求，将其升级为 WebSocket 连接，传递应用共享状态
@@ -583,14 +733,18 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     while let Ok(lyric) = rx.recv().await {
         let text_to_send = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&lyric) {
             if let Some(arr) = parsed.as_array() {
-                if arr.len() == 11 {
-                    arr[5].as_str().unwrap_or("").to_string()
+                if arr.len() == graphics::LYRIC_BITMAP_LINES
+                    || arr.len() == graphics::LYRIC_BITMAP_LINES + 2
+                {
+                    arr[arr.len() / 2].as_str().unwrap_or("").to_string()
                 } else {
                     lyric.clone()
                 }
             } else if let Some(l_arr) = parsed["lines"].as_array() {
-                if l_arr.len() == 11 {
-                    l_arr[5].as_str().unwrap_or("").to_string()
+                if l_arr.len() == graphics::LYRIC_BITMAP_LINES
+                    || l_arr.len() == graphics::LYRIC_BITMAP_LINES + 2
+                {
+                    l_arr[l_arr.len() / 2].as_str().unwrap_or("").to_string()
                 } else {
                     lyric.clone()
                 }
@@ -603,8 +757,74 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
         let text_to_send = text_to_send.replace('\n', " - ");
 
-        if socket.send(Message::Text(text_to_send.into())).await.is_err() {
+        if socket
+            .send(Message::Text(text_to_send.into()))
+            .await
+            .is_err()
+        {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bitmap(width: u16, height: u16, value: u8) -> graphics::LyricBitmap {
+        graphics::LyricBitmap {
+            x: graphics::LYRIC_BITMAP_X,
+            y: graphics::LYRIC_BITMAP_Y,
+            width,
+            height,
+            pixels: vec![value; width as usize * height as usize],
+        }
+    }
+
+    #[test]
+    fn lyric_animation_keeps_all_frames_when_under_budget() {
+        let frames = vec![bitmap(2, 2, 1), bitmap(2, 2, 2), bitmap(2, 2, 3)];
+
+        let packets = pack_lyric_animation_frames_with_budgets(&frames, usize::MAX, usize::MAX);
+
+        assert_eq!(packets.len(), frames.len());
+    }
+
+    #[test]
+    fn lyric_animation_keeps_short_transition_when_full_is_too_large() {
+        let frames = vec![
+            bitmap(12, 12, 1),
+            bitmap(12, 12, 2),
+            bitmap(12, 12, 3),
+            bitmap(12, 12, 4),
+            bitmap(12, 12, 5),
+        ];
+
+        let packets = pack_lyric_animation_frames_with_budgets(&frames, 1, usize::MAX);
+
+        assert!(packets.len() > 1);
+        assert!(packets.len() < frames.len());
+        assert_eq!(
+            packets.last(),
+            Some(&protocol::pack_lyric_bitmap_cropped(frames.last().unwrap()))
+        );
+    }
+
+    #[test]
+    fn lyric_animation_falls_back_to_final_frame_when_short_is_too_large() {
+        let frames = vec![
+            bitmap(12, 12, 1),
+            bitmap(12, 12, 2),
+            bitmap(12, 12, 3),
+            bitmap(12, 12, 4),
+            bitmap(12, 12, 5),
+        ];
+
+        let packets = pack_lyric_animation_frames_with_budgets(&frames, 1, 1);
+
+        assert_eq!(
+            packets,
+            vec![protocol::pack_lyric_bitmap_cropped(frames.last().unwrap())]
+        );
     }
 }
