@@ -117,6 +117,21 @@ fn build_lyric_payload(lyrics: &[LyricLine], target_idx: usize) -> Option<LyricP
     Some(LyricPayload { lines, times })
 }
 
+fn song_id_matches_current(current_song_id: Option<&str>, expected_song_id: &str) -> bool {
+    current_song_id == Some(expected_song_id)
+}
+
+async fn is_current_song(current_ncm_id: &Arc<RwLock<Option<String>>>, expected_song_id: &str) -> bool {
+    let current = current_ncm_id.read().await;
+    song_id_matches_current(current.as_deref(), expected_song_id)
+}
+
+fn lyric_position_needs_backtrack_debounce(last_position: Option<f64>, position: f64, current_idx: usize) -> bool {
+    current_idx != usize::MAX
+        && position <= 3.0
+        && last_position.map(|last| position + 5.0 < last).unwrap_or(false)
+}
+
 async fn fetch_and_parse_lrc(client: &reqwest::Client, song_id: &str) -> std::result::Result<Vec<LyricLine>, Box<dyn std::error::Error>> {
     let url = format!("http://127.0.0.1:10754/lyric?id={}&realIP=211.161.244.70", song_id);
     let resp = client.get(&url).send().await?.json::<LrcResponse>().await?;
@@ -195,12 +210,18 @@ async fn fetch_and_parse_lrc(client: &reqwest::Client, song_id: &str) -> std::re
     Ok(lyrics)
 }
 
-async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMediaTransportControlsSession, lyric_tx: tokio::sync::broadcast::Sender<String>) {
+async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMediaTransportControlsSession, lyric_tx: tokio::sync::broadcast::Sender<String>, expected_song_id: String, current_ncm_id: Arc<RwLock<Option<String>>>) {
     let mut current_idx = usize::MAX;
+    let mut last_position: Option<f64> = None;
+    let mut backtrack_started: Option<tokio::time::Instant> = None;
     let manual_offset_sec: f64 = 0.0;
 
     let wait_start = tokio::time::Instant::now();
     loop {
+        if !is_current_song(&current_ncm_id, &expected_song_id).await {
+            return;
+        }
+
         if let Ok(timeline) = session.GetTimelineProperties() {
             if let Ok(pos) = timeline.Position() {
                 if pos.Duration < 10_000_000 || wait_start.elapsed().as_millis() > 600 {
@@ -212,6 +233,10 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
     }
 
     loop {
+        if !is_current_song(&current_ncm_id, &expected_song_id).await {
+            return;
+        }
+
         let mut position = -1.0;
 
         if let Ok(timeline) = session.GetTimelineProperties() {
@@ -241,6 +266,16 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
         }
 
         if position >= 0.0 {
+            if lyric_position_needs_backtrack_debounce(last_position, position, current_idx) {
+                let started = backtrack_started.get_or_insert_with(tokio::time::Instant::now);
+                if started.elapsed() < Duration::from_millis(1200) {
+                    sleep(Duration::from_millis(20)).await;
+                    continue;
+                }
+            } else {
+                backtrack_started = None;
+            }
+
             let target_idx = display_lyric_index_at_position(&lyrics, position);
 
             if let Some(target_idx) = target_idx {
@@ -250,10 +285,14 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
                     };
                     let json_str = serde_json::to_string(&payload).unwrap_or_default();
                     println!("{}", lyrics[target_idx].text);
+                    if !is_current_song(&current_ncm_id, &expected_song_id).await {
+                        return;
+                    }
                     let _ = lyric_tx.send(json_str);
                     current_idx = target_idx;
                 }
             }
+            last_position = Some(position);
         }
 
         sleep(Duration::from_millis(20)).await;
@@ -443,7 +482,6 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
         if song_id != last_id {
             println!("提取到网易云歌曲 ID: {}", song_id);
             last_id = song_id.clone();
-            let _ = song_tx.send(song_id.clone());
             {
                 let mut writer = current_ncm_id.write().await;
                 *writer = Some(song_id.clone());
@@ -451,6 +489,7 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
             if let Some(task) = current_task.take() {
                 task.abort();
             }
+            let _ = song_tx.send(song_id.clone());
             
             let empty_lyric = "[\"\",\"\",\"\",\"\",\"\",\"加载中...\",\"\",\"\",\"\",\"\",\"\"]";
             let _ = lyric_tx.send(empty_lyric.to_string());
@@ -460,8 +499,10 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
                     Ok(lyrics) => {
                         println!("成功获取歌词，开始同步");
                         let tx_clone = lyric_tx.clone();
+                        let task_song_id = song_id.clone();
+                        let current_ncm_id_clone = current_ncm_id.clone();
                         current_task = Some(tokio::spawn(async move {
-                            sync_lyrics_to_channel(lyrics, session, tx_clone).await;
+                            sync_lyrics_to_channel(lyrics, session, tx_clone, task_song_id, current_ncm_id_clone).await;
                         }));
                     },
                     Err(e) => println!("获取歌词失败: {}", e)
@@ -504,5 +545,19 @@ mod tests {
         let idx = display_lyric_index_at_position(&lyrics, 10.0);
 
         assert_eq!(idx, Some(0));
+    }
+
+    #[test]
+    fn lyric_task_song_guard_rejects_stale_song() {
+        assert!(song_id_matches_current(Some("song-b"), "song-b"));
+        assert!(!song_id_matches_current(Some("song-a"), "song-b"));
+        assert!(!song_id_matches_current(None, "song-b"));
+    }
+
+    #[test]
+    fn lyric_backtrack_debounce_only_catches_reset_to_start_after_playback() {
+        assert!(lyric_position_needs_backtrack_debounce(Some(90.0), 0.2, 4));
+        assert!(!lyric_position_needs_backtrack_debounce(Some(90.0), 30.0, 4));
+        assert!(!lyric_position_needs_backtrack_debounce(None, 0.2, usize::MAX));
     }
 }

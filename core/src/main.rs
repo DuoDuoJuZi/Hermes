@@ -559,6 +559,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             let mut current_task: Option<tokio::task::JoinHandle<()>> = None;
             while let Ok(song_id) = song_rx_for_cover.recv().await {
+                *last_lyric_store.write().await = String::new();
+
                 if let Some(task) = current_task.take() {
                     task.abort();
                 }
