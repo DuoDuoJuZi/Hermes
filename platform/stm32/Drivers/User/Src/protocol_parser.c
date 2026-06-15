@@ -145,6 +145,72 @@ void Draw_Cover(uint8_t *data, uint32_t length) {
     }
 }
 
+static void Draw_CoverRgb565Block(uint8_t *data, uint32_t length) {
+    if (length < 11) {
+        return;
+    }
+
+    uint16_t width = data[0] | (data[1] << 8);
+    uint16_t height = data[2] | (data[3] << 8);
+    uint8_t theme_r = data[4];
+    uint8_t theme_g = data[5];
+    uint8_t theme_b = data[6];
+    uint16_t chunk_y = data[7] | (data[8] << 8);
+    uint16_t chunk_h = data[9] | (data[10] << 8);
+    uint32_t data_idx = 11;
+
+    if (width == 0 || height == 0 || width > 280 || height > 400 || chunk_h == 0) {
+        return;
+    }
+    if ((uint32_t)chunk_y + chunk_h > height) {
+        return;
+    }
+    if (length < 11 + (uint32_t)width * chunk_h * 2) {
+        return;
+    }
+
+    int16_t start_x = 20 + (300 - 20 - (int16_t)width) / 2;
+    if (start_x < 20) start_x = 20;
+    int16_t start_y = (480 - (int16_t)height) / 2 - 30;
+    if (start_y < 0) start_y = 0;
+
+    if (chunk_y == 0) {
+        global_theme_bg = (0xFF << 24) | (theme_r << 16) | (theme_g << 8) | theme_b;
+
+        LCD_SetLayer(1);
+        LCD_SetColor(0x00000000);
+        LCD_FillRect(LYRIC_BITMAP_X, LYRIC_BITMAP_Y, LYRIC_BITMAP_W, LYRIC_BITMAP_H);
+        LCD_FillRect(300, 380, 500, 60);
+        lyric_front_buffer_valid = 0;
+
+        LCD_SetLayer(0);
+        LCD_SetColor(global_theme_bg);
+        LCD_FillRect(0, 0, 800, 480);
+    } else {
+        LCD_SetLayer(0);
+    }
+
+    for (uint16_t row = 0; row < chunk_h; row++) {
+        uint16_t y = chunk_y + row;
+        for (uint16_t x = 0; x < width; x++) {
+            uint16_t pixel = data[data_idx] | (data[data_idx + 1] << 8);
+            data_idx += 2;
+
+            int16_t draw_x = start_x + x;
+            int16_t draw_y = start_y + y;
+            if (draw_x >= 20 && draw_x < 300 && draw_y >= 50 && draw_y < 450) {
+#if ColorMode_0 == LTDC_PIXEL_FORMAT_RGB565
+                LCD_DrawPoint(draw_x, draw_y, pixel);
+#else
+                uint8_t r = (uint8_t)(((pixel >> 11) & 0x1F) << 3);
+                uint8_t g = (uint8_t)(((pixel >> 5) & 0x3F) << 2);
+                uint8_t b = (uint8_t)((pixel & 0x1F) << 3);
+                Safe_DrawPoint_Layer0(draw_x, draw_y, r, g, b);
+#endif
+            }
+        }
+    }
+}
 /**
  * @brief 绘制灰度歌词文本
  * @param data 文本点阵灰度像素及宽高数�?
@@ -518,6 +584,8 @@ void Protocol_ParseByte(uint8_t byte) {
                     LCD_FillCircle(100 + current_width, 457, 7);
                 } else if (parser.type == 0x06) {
                     Draw_LyricBitmap(parser.payload_buf, parser.len);
+                } else if (parser.type == 0x07) {
+                    Draw_CoverRgb565Block(parser.payload_buf, parser.len);
                 }
             }
             parser.state = STATE_HEAD1;

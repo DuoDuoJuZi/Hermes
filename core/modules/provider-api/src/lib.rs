@@ -8,6 +8,7 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSession,
     CurrentSessionChangedEventArgs,
     MediaPropertiesChangedEventArgs,
+    PlaybackInfoChangedEventArgs,
     GlobalSystemMediaTransportControlsSessionMediaProperties,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus
 };
@@ -30,6 +31,90 @@ struct LyricLine {
     time: f64,
     text: String,
     trans: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct LyricPayload {
+    lines: Vec<String>,
+    times: Vec<f64>,
+}
+
+fn lyric_has_text(line: &LyricLine) -> bool {
+    !line.text.trim().is_empty()
+        || line
+            .trans
+            .as_ref()
+            .map(|text| !text.trim().is_empty())
+            .unwrap_or(false)
+}
+
+fn display_lyric_index_at_position(lyrics: &[LyricLine], position: f64) -> Option<usize> {
+    if lyrics.is_empty() {
+        return None;
+    }
+
+    let current_end = lyrics.partition_point(|line| line.time <= position);
+    for idx in (0..current_end).rev() {
+        if lyric_has_text(&lyrics[idx]) {
+            return Some(idx);
+        }
+    }
+
+    lyrics
+        .iter()
+        .enumerate()
+        .skip(current_end)
+        .find_map(|(idx, line)| lyric_has_text(line).then_some(idx))
+}
+
+fn build_lyric_payload(lyrics: &[LyricLine], target_idx: usize) -> Option<LyricPayload> {
+    let current_lyric_obj = lyrics.get(target_idx)?;
+    if !lyric_has_text(current_lyric_obj) {
+        return None;
+    }
+
+    let current_lyric = current_lyric_obj.text.trim();
+    let mut lines = Vec::with_capacity(13);
+    let mut times = Vec::with_capacity(11);
+
+    let mut display_text = current_lyric.to_string();
+    if let Some(trans) = &current_lyric_obj.trans {
+        let trans = trans.trim();
+        if !trans.is_empty() {
+            if display_text.is_empty() {
+                display_text = trans.to_string();
+            } else {
+                display_text = format!("{}\n{}", display_text, trans);
+            }
+        }
+    }
+
+    for offset in -6isize..=6 {
+        let idx = target_idx as isize + offset;
+        if offset == 0 {
+            lines.push(display_text.clone());
+        } else if idx >= 0 {
+            lines.push(
+                lyrics
+                    .get(idx as usize)
+                    .map(|line| line.text.clone())
+                    .unwrap_or_default(),
+            );
+        } else {
+            lines.push(String::new());
+        }
+    }
+
+    for offset in -5isize..=5 {
+        let idx = target_idx as isize + offset;
+        if idx >= 0 {
+            times.push(lyrics.get(idx as usize).map(|line| line.time).unwrap_or(0.0));
+        } else {
+            times.push(0.0);
+        }
+    }
+
+    Some(LyricPayload { lines, times })
 }
 
 async fn fetch_and_parse_lrc(client: &reqwest::Client, song_id: &str) -> std::result::Result<Vec<LyricLine>, Box<dyn std::error::Error>> {
@@ -156,52 +241,18 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
         }
 
         if position >= 0.0 {
-            let target_idx = lyrics.partition_point(|line| line.time <= position).saturating_sub(1);
+            let target_idx = display_lyric_index_at_position(&lyrics, position);
 
-            if target_idx != current_idx && target_idx < lyrics.len() {
-                let current_lyric_obj = &lyrics[target_idx];
-                let current_lyric = &current_lyric_obj.text;
-                if !current_lyric.is_empty() {
-                    let mut lines = Vec::with_capacity(13);
-                    let mut times = Vec::with_capacity(11);
-
-                      let mut display_text = current_lyric.clone();
-                      if let Some(trans) = &current_lyric_obj.trans {
-                          display_text = format!("{}\n{}", display_text, trans);
-                      }
-
-                    for offset in -6isize..=6 {
-                        let idx = target_idx as isize + offset;
-                        if offset == 0 {
-                            lines.push(display_text.clone());
-                        } else if idx >= 0 {
-                            lines.push(lyrics.get(idx as usize).map(|line| line.text.clone()).unwrap_or_default());
-                        } else {
-                            lines.push(String::new());
-                        }
-                    }
-
-                    for offset in -5isize..=5 {
-                        let idx = target_idx as isize + offset;
-                        if idx >= 0 {
-                            times.push(lyrics.get(idx as usize).map(|line| line.time).unwrap_or(0.0));
-                        } else {
-                            times.push(0.0);
-                        }
-                    }
-
-                    #[derive(serde::Serialize)]
-                    struct LyricPayload {
-                        lines: Vec<String>,
-                        times: Vec<f64>,
-                    }
-
-                    let payload = LyricPayload { lines, times };
+            if let Some(target_idx) = target_idx {
+                if target_idx != current_idx {
+                    let Some(payload) = build_lyric_payload(&lyrics, target_idx) else {
+                        continue;
+                    };
                     let json_str = serde_json::to_string(&payload).unwrap_or_default();
-                    println!("{}", current_lyric);
+                    println!("{}", lyrics[target_idx].text);
                     let _ = lyric_tx.send(json_str);
+                    current_idx = target_idx;
                 }
-                current_idx = target_idx;
             }
         }
 
@@ -235,6 +286,19 @@ fn create_media_props_handler(tx: tokio::sync::mpsc::UnboundedSender<String>, ha
     })
 }
 
+fn create_playback_info_handler(play_state_tx: tokio::sync::broadcast::Sender<bool>) -> TypedEventHandler<GlobalSystemMediaTransportControlsSession, PlaybackInfoChangedEventArgs> {
+    TypedEventHandler::<GlobalSystemMediaTransportControlsSession, PlaybackInfoChangedEventArgs>::new(move |session_ref, _| {
+        if let Some(session) = session_ref.clone() {
+            if let Ok(playback_info) = session.GetPlaybackInfo() {
+                if let Ok(status) = playback_info.PlaybackStatus() {
+                    let _ = play_state_tx.send(status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing);
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
 pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<String>, song_tx: tokio::sync::broadcast::Sender<String>, progress_tx: tokio::sync::broadcast::Sender<(u16, u64, u64)>, play_state_tx: tokio::sync::broadcast::Sender<bool>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
@@ -246,6 +310,7 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
     let tx_first = tx.clone();
     if let Ok(session) = manager.GetCurrentSession() {
         let _ = session.MediaPropertiesChanged(&create_media_props_handler(tx.clone(), handle.clone()));
+        let _ = session.PlaybackInfoChanged(&create_playback_info_handler(play_state_tx.clone()));
         if let Ok(op) = session.TryGetMediaPropertiesAsync() {
             if let Ok(properties) = op.await {
                 let props: GlobalSystemMediaTransportControlsSessionMediaProperties = properties;
@@ -264,10 +329,12 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
 
     let tx_for_event = tx.clone();
     let handle_for_event = handle.clone();
+    let play_state_tx_for_event = play_state_tx.clone();
     manager.CurrentSessionChanged(&TypedEventHandler::<GlobalSystemMediaTransportControlsSessionManager, CurrentSessionChangedEventArgs>::new(move |manager_ref, _| {
         if let Some(mgr) = manager_ref.clone() {
             if let Ok(session) = mgr.GetCurrentSession() {
                  let _ = session.MediaPropertiesChanged(&create_media_props_handler(tx_for_event.clone(), handle_for_event.clone()));
+                 let _ = session.PlaybackInfoChanged(&create_playback_info_handler(play_state_tx_for_event.clone()));
                  
                  let tx_inner = tx_for_event.clone();
                  let session_clone = session.clone();
@@ -404,4 +471,38 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lyric(time: f64, text: &str) -> LyricLine {
+        LyricLine {
+            time,
+            text: text.to_string(),
+            trans: None,
+        }
+    }
+
+    #[test]
+    fn intro_empty_timestamp_displays_first_real_lyric() {
+        let lyrics = vec![lyric(0.0, ""), lyric(15.0, "第一句歌词"), lyric(22.0, "第二句歌词")];
+
+        let idx = display_lyric_index_at_position(&lyrics, 0.5);
+
+        assert_eq!(idx, Some(1));
+        let payload = build_lyric_payload(&lyrics, idx.unwrap()).unwrap();
+        assert_eq!(payload.lines[6], "第一句歌词");
+        assert_eq!(payload.times[5], 15.0);
+    }
+
+    #[test]
+    fn later_empty_timestamp_keeps_previous_real_lyric() {
+        let lyrics = vec![lyric(0.0, "第一句歌词"), lyric(8.0, ""), lyric(16.0, "第二句歌词")];
+
+        let idx = display_lyric_index_at_position(&lyrics, 10.0);
+
+        assert_eq!(idx, Some(0));
+    }
 }

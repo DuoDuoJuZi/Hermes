@@ -37,6 +37,54 @@ struct AppState {
     lyric_tx: broadcast::Sender<String>,
 }
 
+fn transformed_text_layer(
+    layer: &graphics::TextLayer,
+    dx: i16,
+    dy: i16,
+    alpha: u16,
+) -> graphics::TextLayer {
+    let mut transformed = layer.clone();
+    transformed.x = transformed.x.saturating_add(dx);
+    transformed.y = transformed.y.saturating_add(dy);
+    if alpha < 255 {
+        for pixel in &mut transformed.pixel_data {
+            *pixel = ((*pixel as u16 * alpha + 127) / 255) as u8;
+        }
+    }
+    transformed
+}
+
+async fn send_meta_layers_animated(
+    serial_tx: &tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    previous_layers: Option<Vec<graphics::TextLayer>>,
+    next_layers: &[graphics::TextLayer],
+) {
+    const META_X: u16 = 360;
+    const META_Y: u16 = 0;
+    const META_W: u16 = 440;
+    const META_H: u16 = 115;
+
+    if let Some(previous) = previous_layers {
+        for (dx, dy, alpha) in [(0, 0, 220), (-6, -4, 150), (-14, -10, 70)] {
+            let _ = serial_tx.send(protocol::pack_clear_rect(META_X, META_Y, META_W, META_H));
+            for layer in &previous {
+                let frame_layer = transformed_text_layer(layer, dx, dy, alpha);
+                let _ = serial_tx.send(protocol::pack_text_layer(&frame_layer));
+            }
+            tokio::time::sleep(Duration::from_millis(24)).await;
+        }
+    }
+
+    for (dx, dy, alpha) in [(6, 4, 150), (0, 0, 255)] {
+        let _ = serial_tx.send(protocol::pack_clear_rect(META_X, META_Y, META_W, META_H));
+        for layer in next_layers {
+            let frame_layer = transformed_text_layer(layer, dx, dy, alpha);
+            let _ = serial_tx.send(protocol::pack_text_layer(&frame_layer));
+        }
+        tokio::time::sleep(Duration::from_millis(24)).await;
+    }
+}
+
 /// 后台守护进程核心入口，初始化 WebSocket 服务与 SMTC 监听，建立多线程异步通信循环
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -64,6 +112,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     });
 
     let (serial_tx, mut serial_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (serial_high_tx, mut serial_high_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
     let (hw_event_tx, mut hw_event_rx) = tokio::sync::mpsc::unbounded_channel::<HwEvent>();
 
     std::thread::spawn(move || {
@@ -95,70 +144,71 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         loop {
             let mut work_done = false;
 
-            match serial_rx.try_recv() {
-                Ok(packet) => {
-                    println!(
-                        "[DEBUG] 发送数据包到下位机，字节大小: {} bytes",
-                        packet.len()
-                    );
-                    let mut offset = 0;
-                    while offset < packet.len() {
-                        let end = std::cmp::min(offset + 1024, packet.len());
-                        if let Err(e) = port.write_all(&packet[offset..end]) {
-                            eprintln!("串口发送失败: {}", e);
-                            break;
-                        }
-                        offset = end;
+            let packet = serial_high_rx
+                .try_recv()
+                .ok()
+                .or_else(|| serial_rx.try_recv().ok());
 
-                        if let Ok(bytes_to_read) = port.bytes_to_read() {
-                            if bytes_to_read > 0 {
-                                let to_read = std::cmp::min(bytes_to_read as usize, read_buf.len());
-                                if let Ok(n) =
-                                    std::io::Read::read(&mut *port, &mut read_buf[..to_read])
-                                {
-                                    for &b in &read_buf[..n] {
-                                        if rx_state == 1 {
-                                            seek_permille = b as u16;
-                                            rx_state = 2;
-                                        } else if rx_state == 2 {
-                                            seek_permille |= (b as u16) << 8;
-                                            rx_state = 0;
-                                            println!("接收到跳转请求: {}/1000", seek_permille);
-                                            let _ = hw_event_tx.send(HwEvent::Seek(seek_permille));
-                                        } else if rx_state == 3 {
-                                            click_y = b as u16;
-                                            rx_state = 4;
-                                        } else if rx_state == 4 {
-                                            click_y |= (b as u16) << 8;
-                                            rx_state = 0;
-                                            println!("接收到歌词点击请求，Y坐标: {}", click_y);
-                                            let _ = hw_event_tx.send(HwEvent::LyricClick(click_y));
-                                        } else {
-                                            if b == b'P' {
-                                                println!("接收到播放/暂停请求");
-                                                let _ = hw_event_tx.send(HwEvent::Command(b'P'));
-                                            } else if b == b'L' {
-                                                println!("接收到上一首请求");
-                                                let _ = hw_event_tx.send(HwEvent::Command(b'L'));
-                                            } else if b == b'N' {
-                                                println!("接收到下一首请求");
-                                                let _ = hw_event_tx.send(HwEvent::Command(b'N'));
-                                            } else if b == b'E' {
-                                                println!("接收到了不在范围内的点击");
-                                            } else if b == b'S' {
-                                                rx_state = 1;
-                                            } else if b == b'C' {
-                                                rx_state = 3;
-                                            }
+            if let Some(packet) = packet {
+                println!(
+                    "[DEBUG] 发送数据包到下位机，字节大小: {} bytes",
+                    packet.len()
+                );
+                let mut offset = 0;
+                while offset < packet.len() {
+                    let end = std::cmp::min(offset + 1024, packet.len());
+                    if let Err(e) = port.write_all(&packet[offset..end]) {
+                        eprintln!("串口发送失败: {}", e);
+                        break;
+                    }
+                    offset = end;
+
+                    if let Ok(bytes_to_read) = port.bytes_to_read() {
+                        if bytes_to_read > 0 {
+                            let to_read = std::cmp::min(bytes_to_read as usize, read_buf.len());
+                            if let Ok(n) = std::io::Read::read(&mut *port, &mut read_buf[..to_read])
+                            {
+                                for &b in &read_buf[..n] {
+                                    if rx_state == 1 {
+                                        seek_permille = b as u16;
+                                        rx_state = 2;
+                                    } else if rx_state == 2 {
+                                        seek_permille |= (b as u16) << 8;
+                                        rx_state = 0;
+                                        println!("接收到跳转请求: {}/1000", seek_permille);
+                                        let _ = hw_event_tx.send(HwEvent::Seek(seek_permille));
+                                    } else if rx_state == 3 {
+                                        click_y = b as u16;
+                                        rx_state = 4;
+                                    } else if rx_state == 4 {
+                                        click_y |= (b as u16) << 8;
+                                        rx_state = 0;
+                                        println!("接收到歌词点击请求，Y坐标: {}", click_y);
+                                        let _ = hw_event_tx.send(HwEvent::LyricClick(click_y));
+                                    } else {
+                                        if b == b'P' {
+                                            println!("接收到播放/暂停请求");
+                                            let _ = hw_event_tx.send(HwEvent::Command(b'P'));
+                                        } else if b == b'L' {
+                                            println!("接收到上一首请求");
+                                            let _ = hw_event_tx.send(HwEvent::Command(b'L'));
+                                        } else if b == b'N' {
+                                            println!("接收到下一首请求");
+                                            let _ = hw_event_tx.send(HwEvent::Command(b'N'));
+                                        } else if b == b'E' {
+                                            println!("接收到了不在范围内的点击");
+                                        } else if b == b'S' {
+                                            rx_state = 1;
+                                        } else if b == b'C' {
+                                            rx_state = 3;
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                    work_done = true;
                 }
-                Err(_) => {}
+                work_done = true;
             }
 
             if let Ok(bytes_to_read) = port.bytes_to_read() {
@@ -359,7 +409,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let serial_tx_for_progress = serial_tx.clone();
+    let serial_tx_for_progress = serial_high_tx.clone();
     let mut serial_progress_rx = progress_tx.subscribe();
 
     tokio::spawn(async move {
@@ -394,7 +444,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let serial_tx_for_play_state = serial_tx.clone();
+    let serial_tx_for_play_state = serial_high_tx.clone();
     let mut serial_play_state_rx = play_state_tx.subscribe();
 
     tokio::spawn(async move {
@@ -411,6 +461,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     });
 
     let serial_tx_for_cover = serial_tx.clone();
+    let serial_high_tx_for_cover = serial_high_tx.clone();
     let mut song_rx_for_cover = song_tx.subscribe();
     let resend_lyric_tx = lyric_tx.clone();
     let resend_play_state_tx = play_state_tx.clone();
@@ -434,6 +485,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let last_meta_layers = Arc::new(RwLock::new(None::<Vec<graphics::TextLayer>>));
+
     {
         tokio::spawn(async move {
             let mut current_task: Option<tokio::task::JoinHandle<()>> = None;
@@ -443,10 +496,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 }
 
                 let serial_tx_clone = serial_tx_for_cover.clone();
+                let serial_high_tx_clone = serial_high_tx_for_cover.clone();
                 let resend_lyric_tx_clone = resend_lyric_tx.clone();
                 let resend_play_state_tx_clone = resend_play_state_tx.clone();
                 let last_lyric_store_clone = last_lyric_store.clone();
                 let last_play_state_store_clone = last_play_state_store.clone();
+                let last_meta_layers_clone = last_meta_layers.clone();
 
                 current_task = Some(tokio::spawn(async move {
                     let url = format!(
@@ -505,21 +560,33 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                     })
                                 );
 
-                                if let Ok(Ok(matrix)) = cover_res {
+                                let cover_blocks = if let Ok(Ok(matrix)) = cover_res {
                                     graphics::print_cover_to_console(&matrix);
-                                    let packet = protocol::pack_cover_matrix(&matrix);
-                                    let _ = serial_tx_clone.send(packet);
+                                    protocol::pack_cover_matrix_rgb565_blocks(&matrix)
+                                } else {
+                                    Vec::new()
+                                };
+
+                                if let Some(first_block) = cover_blocks.first() {
+                                    let _ = serial_high_tx_clone.send(first_block.clone());
                                 }
 
-                                tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
-
                                 if let Ok(Some(meta_layers)) = meta_layers_res {
-                                    let clear_meta = protocol::pack_clear_rect(360, 0, 440, 115);
-                                    let _ = serial_tx_clone.send(clear_meta);
-                                    for layer in meta_layers {
-                                        let packet = protocol::pack_text_layer(&layer);
-                                        let _ = serial_tx_clone.send(packet);
-                                    }
+                                    let previous_meta = last_meta_layers_clone.read().await.clone();
+                                    send_meta_layers_animated(
+                                        &serial_high_tx_clone,
+                                        previous_meta,
+                                        &meta_layers,
+                                    )
+                                    .await;
+                                    *last_meta_layers_clone.write().await = Some(meta_layers);
+                                } else {
+                                    let _ = serial_high_tx_clone
+                                        .send(protocol::pack_clear_rect(360, 0, 440, 115));
+                                }
+
+                                for block in cover_blocks.into_iter().skip(1) {
+                                    let _ = serial_tx_clone.send(block);
                                 }
 
                                 let last_lyric = last_lyric_store_clone.read().await.clone();

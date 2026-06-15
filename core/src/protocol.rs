@@ -12,6 +12,7 @@ pub enum PacketType {
     TextLayer = 0x04,
     Progress = 0x05,
     LyricBitmap = 0x06,
+    CoverRgb565Block = 0x07,
 }
 
 /// 构建底层原始包裹结构并计算校验和
@@ -168,6 +169,50 @@ pub fn pack_cover_matrix(matrix: &ImageMatrix) -> Vec<u8> {
     build_packet(PacketType::CoverRgb888, &payload)
 }
 
+fn rgb888_to_rgb565_le(r: u8, g: u8, b: u8) -> [u8; 2] {
+    let value = (((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3);
+    value.to_le_bytes()
+}
+
+pub fn pack_cover_matrix_rgb565_blocks(matrix: &ImageMatrix) -> Vec<Vec<u8>> {
+    const BLOCK_ROWS: usize = 16;
+
+    let width = matrix.width as usize;
+    let height = matrix.height as usize;
+    if width == 0 || height == 0 || matrix.rgb_data.len() < width * height * 3 {
+        return Vec::new();
+    }
+
+    let mut packets = Vec::with_capacity((height + BLOCK_ROWS - 1) / BLOCK_ROWS);
+    for chunk_y in (0..height).step_by(BLOCK_ROWS) {
+        let chunk_h = (height - chunk_y).min(BLOCK_ROWS);
+        let mut payload = Vec::with_capacity(11 + width * chunk_h * 2);
+        payload.extend_from_slice(&(matrix.width as u16).to_le_bytes());
+        payload.extend_from_slice(&(matrix.height as u16).to_le_bytes());
+        payload.push(matrix.theme_color.0);
+        payload.push(matrix.theme_color.1);
+        payload.push(matrix.theme_color.2);
+        payload.extend_from_slice(&(chunk_y as u16).to_le_bytes());
+        payload.extend_from_slice(&(chunk_h as u16).to_le_bytes());
+
+        for row in chunk_y..chunk_y + chunk_h {
+            let row_start = row * width * 3;
+            for x in 0..width {
+                let idx = row_start + x * 3;
+                payload.extend_from_slice(&rgb888_to_rgb565_le(
+                    matrix.rgb_data[idx],
+                    matrix.rgb_data[idx + 1],
+                    matrix.rgb_data[idx + 2],
+                ));
+            }
+        }
+
+        packets.push(build_packet(PacketType::CoverRgb565Block, &payload));
+    }
+
+    packets
+}
+
 /// 封装现成的灰度点阵歌词
 pub fn pack_text_matrix(matrix: &TextMatrix) -> Vec<u8> {
     let mut payload = Vec::with_capacity(matrix.pixel_data.len() + 4);
@@ -269,5 +314,34 @@ mod tests {
         assert_eq!(u16::from_le_bytes([payload[4], payload[5]]), 2);
         assert_eq!(u16::from_le_bytes([payload[6], payload[7]]), 2);
         assert_eq!(unpack_lyric_bitmap_pixels(&packet), vec![4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn cover_rgb565_blocks_preserve_dimensions_and_reduce_payload() {
+        let matrix = ImageMatrix {
+            width: 2,
+            height: 17,
+            theme_color: (10, 20, 30),
+            rgb_data: (0..2 * 17)
+                .flat_map(|i| {
+                    let v = i as u8;
+                    [v, v.wrapping_add(1), v.wrapping_add(2)]
+                })
+                .collect(),
+        };
+
+        let packets = pack_cover_matrix_rgb565_blocks(&matrix);
+        assert_eq!(packets.len(), 2);
+        assert_eq!(packets[0][2], PacketType::CoverRgb565Block as u8);
+
+        let len = u32::from_le_bytes([packets[0][3], packets[0][4], packets[0][5], packets[0][6]])
+            as usize;
+        let payload = &packets[0][7..7 + len];
+        assert_eq!(u16::from_le_bytes([payload[0], payload[1]]), 2);
+        assert_eq!(u16::from_le_bytes([payload[2], payload[3]]), 17);
+        assert_eq!(&payload[4..7], &[10, 20, 30]);
+        assert_eq!(u16::from_le_bytes([payload[7], payload[8]]), 0);
+        assert_eq!(u16::from_le_bytes([payload[9], payload[10]]), 16);
+        assert_eq!(payload.len(), 11 + 2 * 16 * 2);
     }
 }

@@ -166,6 +166,7 @@ pub struct TextMatrix {
 }
 
 /// 拆分后的文本图层块数据，包含自身坐标与宽高
+#[derive(Clone)]
 pub struct TextLayer {
     pub x: i16,
     pub y: i16,
@@ -348,6 +349,99 @@ impl CoverCache {
 }
 
 static COVER_CACHE: OnceLock<Mutex<CoverCache>> = OnceLock::new();
+fn color_luma(r: u8, g: u8, b: u8) -> f32 {
+    0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32
+}
+
+fn color_saturation(r: u8, g: u8, b: u8) -> f32 {
+    let max = r.max(g).max(b) as f32;
+    let min = r.min(g).min(b) as f32;
+    if max <= 0.0 { 0.0 } else { (max - min) / max }
+}
+
+fn darken_theme_color(mut color: (u8, u8, u8)) -> (u8, u8, u8) {
+    let luma = color_luma(color.0, color.1, color.2);
+    if luma > 80.0 {
+        let scale = 80.0 / luma;
+        color.0 = (color.0 as f32 * scale).round() as u8;
+        color.1 = (color.1 as f32 * scale).round() as u8;
+        color.2 = (color.2 as f32 * scale).round() as u8;
+    }
+    color
+}
+
+fn calculate_cover_theme_color(img: &image::RgbImage) -> (u8, u8, u8) {
+    let sample = image::imageops::resize(img, 64, 64, FilterType::Triangle);
+    let sample = image::imageops::blur(&sample, 1.8);
+    let width = sample.width().max(1);
+    let height = sample.height().max(1);
+    let mut bins = std::collections::HashMap::<u16, (f32, f32, f32, f32, f32)>::new();
+    let mut fallback = (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32);
+
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = sample.get_pixel(x, y);
+            let r = pixel[0];
+            let g = pixel[1];
+            let b = pixel[2];
+            let luma = color_luma(r, g, b);
+            let saturation = color_saturation(r, g, b);
+            let nx = ((x as f32 + 0.5) / width as f32 - 0.5) * 2.0;
+            let ny = ((y as f32 + 0.5) / height as f32 - 0.5) * 2.0;
+            let center_weight = (-(nx * nx + ny * ny) * 5.5).exp();
+
+            fallback.0 += r as f32 * center_weight;
+            fallback.1 += g as f32 * center_weight;
+            fallback.2 += b as f32 * center_weight;
+            fallback.3 += center_weight;
+
+            let focus_weight = ((center_weight - 0.25) / 0.75).max(0.0);
+            if focus_weight <= 0.0 || !(18.0..=220.0).contains(&luma) || saturation < 0.08 {
+                continue;
+            }
+
+            let luma_quality = if luma < 95.0 {
+                (luma / 95.0).max(0.25)
+            } else {
+                ((220.0 - luma) / 125.0).max(0.25)
+            };
+            let score_weight = focus_weight * (0.35 + saturation * 1.8) * luma_quality;
+            let avg_weight = focus_weight;
+            let key = (((r >> 4) as u16) << 8) | (((g >> 4) as u16) << 4) | ((b >> 4) as u16);
+            let entry = bins.entry(key).or_insert((0.0, 0.0, 0.0, 0.0, 0.0));
+            entry.0 += score_weight;
+            entry.1 += r as f32 * avg_weight;
+            entry.2 += g as f32 * avg_weight;
+            entry.3 += b as f32 * avg_weight;
+            entry.4 += avg_weight;
+        }
+    }
+
+    let color = bins
+        .values()
+        .filter(|entry| entry.4 > 0.0)
+        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|entry| {
+            (
+                (entry.1 / entry.4).round() as u8,
+                (entry.2 / entry.4).round() as u8,
+                (entry.3 / entry.4).round() as u8,
+            )
+        })
+        .unwrap_or_else(|| {
+            if fallback.3 > 0.0 {
+                (
+                    (fallback.0 / fallback.3).round() as u8,
+                    (fallback.1 / fallback.3).round() as u8,
+                    (fallback.2 / fallback.3).round() as u8,
+                )
+            } else {
+                (0, 0, 0)
+            }
+        });
+
+    darken_theme_color(color)
+}
 
 /// 异步获取网易云封面并解析降采样为像素矩阵数据
 pub async fn fetch_cover_matrix(
@@ -382,51 +476,11 @@ pub async fn fetch_cover_matrix(
         }
     }
 
-    let mut bins = std::collections::HashMap::new();
-    let mut max_count = 0;
-    let mut dominant_center = (0, 0, 0);
-
-    for i in (0..rgb_data.len()).step_by(3) {
-        let r = rgb_data[i];
-        let g = rgb_data[i + 1];
-        let b = rgb_data[i + 2];
-
-        let r_bin = (r >> 3) as u16;
-        let g_bin = (g >> 3) as u16;
-        let b_bin = (b >> 3) as u16;
-
-        let key = (r_bin << 10) | (g_bin << 5) | b_bin;
-
-        let entry = bins.entry(key).or_insert((0, 0, 0, 0));
-        entry.0 += 1;
-        entry.1 += r as u32;
-        entry.2 += g as u32;
-        entry.3 += b as u32;
-
-        if entry.0 > max_count {
-            max_count = entry.0;
-            dominant_center = (
-                (entry.1 / entry.0) as u8,
-                (entry.2 / entry.0) as u8,
-                (entry.3 / entry.0) as u8,
-            );
-        }
-    }
-
-    let luma = 0.299 * (dominant_center.0 as f32)
-        + 0.587 * (dominant_center.1 as f32)
-        + 0.114 * (dominant_center.2 as f32);
-    if luma > 80.0 {
-        let scale = 80.0 / luma;
-        dominant_center.0 = (dominant_center.0 as f32 * scale) as u8;
-        dominant_center.1 = (dominant_center.1 as f32 * scale) as u8;
-        dominant_center.2 = (dominant_center.2 as f32 * scale) as u8;
-    }
-
+    let theme_color = calculate_cover_theme_color(&img);
     let result = ImageMatrix {
         width: resized.width(),
         height: resized.height(),
-        theme_color: dominant_center,
+        theme_color,
         rgb_data,
     };
 
@@ -1048,5 +1102,19 @@ mod tests {
             normalize_single_lyric_line("hello   beautiful\tworld"),
             "hello beautiful world"
         );
+    }
+    #[test]
+    fn cover_theme_prefers_center_subject_over_large_edge_color() {
+        let mut img = image::RgbImage::from_pixel(96, 96, image::Rgb([30, 80, 210]));
+        for y in 34..62 {
+            for x in 34..62 {
+                img.put_pixel(x, y, image::Rgb([220, 30, 30]));
+            }
+        }
+
+        let theme = calculate_cover_theme_color(&img);
+
+        assert!(theme.0 > theme.2, "theme should lean red, got {theme:?}");
+        assert!(color_luma(theme.0, theme.1, theme.2) <= 81.0);
     }
 }
