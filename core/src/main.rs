@@ -12,7 +12,7 @@ use axum::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
@@ -35,6 +35,33 @@ mod protocol;
 #[derive(Clone)]
 struct AppState {
     lyric_tx: broadcast::Sender<String>,
+}
+
+#[derive(Clone, Copy)]
+struct CoverBlockInfo {
+    width: u16,
+    height: u16,
+    chunk_y: u16,
+    chunk_h: u16,
+}
+
+fn parse_cover_block_info(packet: &[u8]) -> Option<CoverBlockInfo> {
+    if packet.len() < 18 || packet.get(2).copied()? != protocol::PacketType::CoverRgb565Block as u8
+    {
+        return None;
+    }
+
+    let payload_len = u32::from_le_bytes([packet[3], packet[4], packet[5], packet[6]]) as usize;
+    if payload_len < 11 || packet.len() < 7 + payload_len + 1 {
+        return None;
+    }
+
+    Some(CoverBlockInfo {
+        width: u16::from_le_bytes([packet[7], packet[8]]),
+        height: u16::from_le_bytes([packet[9], packet[10]]),
+        chunk_y: u16::from_le_bytes([packet[14], packet[15]]),
+        chunk_h: u16::from_le_bytes([packet[16], packet[17]]),
+    })
 }
 
 fn transformed_text_layer(
@@ -140,6 +167,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut rx_state = 0;
         let mut seek_permille = 0u16;
         let mut click_y = 0u16;
+        let mut cover_tx_start: Option<Instant> = None;
+        let mut cover_tx_bytes = 0usize;
+        let mut cover_tx_blocks = 0usize;
 
         loop {
             let mut work_done = false;
@@ -154,6 +184,19 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     "[DEBUG] 发送数据包到下位机，字节大小: {} bytes",
                     packet.len()
                 );
+                let cover_info = parse_cover_block_info(&packet);
+                if let Some(info) = cover_info {
+                    if info.chunk_y == 0 || cover_tx_start.is_none() {
+                        cover_tx_start = Some(Instant::now());
+                        cover_tx_bytes = 0;
+                        cover_tx_blocks = 0;
+                        println!(
+                            "[DEBUG][cover-tx] start {}x{} first_block_rows={}",
+                            info.width, info.height, info.chunk_h
+                        );
+                    }
+                }
+                let packet_send_start = Instant::now();
                 let mut offset = 0;
                 while offset < packet.len() {
                     let end = std::cmp::min(offset + 1024, packet.len());
@@ -205,6 +248,31 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+                let packet_send_elapsed = packet_send_start.elapsed();
+                if let Some(info) = cover_info {
+                    cover_tx_bytes += packet.len();
+                    cover_tx_blocks += 1;
+                    if (info.chunk_y as u32 + info.chunk_h as u32) >= info.height as u32 {
+                        if let Some(start) = cover_tx_start.take() {
+                            let elapsed = start.elapsed();
+                            let kbps = if elapsed.as_secs_f64() > 0.0 {
+                                cover_tx_bytes as f64 / 1024.0 / elapsed.as_secs_f64()
+                            } else {
+                                0.0
+                            };
+                            println!(
+                                "[DEBUG][cover-tx] complete {}x{} blocks={} bytes={} elapsed={}ms last_block={}ms throughput={:.1}KiB/s",
+                                info.width,
+                                info.height,
+                                cover_tx_blocks,
+                                cover_tx_bytes,
+                                elapsed.as_millis(),
+                                packet_send_elapsed.as_millis(),
+                                kbps
+                            );
                         }
                     }
                 }
@@ -549,7 +617,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 let (cover_res, meta_layers_res) = tokio::join!(
                                     tokio::spawn({
                                         let pic_string = pic_string.clone();
-                                        async move { graphics::fetch_cover_matrix(&pic_string).await }
+                                        async move {
+                                            let started = Instant::now();
+                                            let result =
+                                                graphics::fetch_cover_matrix(&pic_string).await;
+                                            (result, started.elapsed())
+                                        }
                                     }),
                                     tokio::task::spawn_blocking({
                                         let title = title.clone();
@@ -560,11 +633,39 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                     })
                                 );
 
-                                let cover_blocks = if let Ok(Ok(matrix)) = cover_res {
-                                    graphics::print_cover_to_console(&matrix);
-                                    protocol::pack_cover_matrix_rgb565_blocks(&matrix)
-                                } else {
-                                    Vec::new()
+                                let cover_blocks = match cover_res {
+                                    Ok((Ok(matrix), process_elapsed)) => {
+                                        graphics::print_cover_to_console(&matrix);
+                                        let pack_started = Instant::now();
+                                        let blocks =
+                                            protocol::pack_cover_matrix_rgb565_blocks(&matrix);
+                                        let pack_elapsed = pack_started.elapsed();
+                                        let bytes: usize = blocks.iter().map(Vec::len).sum();
+                                        println!(
+                                            "[DEBUG][cover] processed={}ms packed={}ms size={}x{} blocks={} bytes={} approx_wire={}ms",
+                                            process_elapsed.as_millis(),
+                                            pack_elapsed.as_millis(),
+                                            matrix.width,
+                                            matrix.height,
+                                            blocks.len(),
+                                            bytes,
+                                            (bytes as f64 * 10.0 / 2_000_000.0 * 1000.0).round()
+                                                as u64
+                                        );
+                                        blocks
+                                    }
+                                    Ok((Err(err), process_elapsed)) => {
+                                        eprintln!(
+                                            "[DEBUG][cover] failed after {}ms: {}",
+                                            process_elapsed.as_millis(),
+                                            err
+                                        );
+                                        Vec::new()
+                                    }
+                                    Err(err) => {
+                                        eprintln!("[DEBUG][cover] task failed: {}", err);
+                                        Vec::new()
+                                    }
                                 };
 
                                 if let Some(first_block) = cover_blocks.first() {

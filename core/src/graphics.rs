@@ -7,6 +7,7 @@ use rusttype::{Font, PositionedGlyph, Scale, point};
 use std::collections::VecDeque;
 use std::error::Error;
 use std::sync::OnceLock;
+use std::time::Instant;
 use tokio::sync::Mutex;
 
 pub const LYRIC_BITMAP_X: u16 = 360;
@@ -443,20 +444,41 @@ fn calculate_cover_theme_color(img: &image::RgbImage) -> (u8, u8, u8) {
     darken_theme_color(color)
 }
 
+fn optimized_cover_url(pic_url: &str) -> String {
+    if pic_url.contains("param=") {
+        pic_url.to_string()
+    } else if pic_url.contains('?') {
+        format!("{pic_url}&param=300y300")
+    } else {
+        format!("{pic_url}?param=300y300")
+    }
+}
+
 /// 异步获取网易云封面并解析降采样为像素矩阵数据
 pub async fn fetch_cover_matrix(
     pic_url: &str,
 ) -> Result<ImageMatrix, Box<dyn Error + Send + Sync>> {
+    let request_url = optimized_cover_url(pic_url);
     let cache_mutex = COVER_CACHE.get_or_init(|| Mutex::new(CoverCache::new(50)));
     {
         let cache = cache_mutex.lock().await;
-        if let Some(cached) = cache.get(pic_url) {
+        if let Some(cached) = cache.get(&request_url) {
+            println!(
+                "[DEBUG][cover-process] cache_hit size={}x{}",
+                cached.width, cached.height
+            );
             return Ok(cached);
         }
     }
 
-    let img_bytes = reqwest::get(pic_url).await?.bytes().await?;
+    let fetch_started = Instant::now();
+    let img_bytes = reqwest::get(&request_url).await?.bytes().await?;
+    let fetch_elapsed = fetch_started.elapsed();
+
+    let decode_started = Instant::now();
     let img = image::load_from_memory(&img_bytes)?.into_rgb8();
+    let decode_elapsed = decode_started.elapsed();
+
     let orig_w = img.width() as f32;
     let orig_h = img.height() as f32;
     let max_w = 280.0_f32;
@@ -464,7 +486,9 @@ pub async fn fetch_cover_matrix(
     let scale = (max_w / orig_w).min(max_h / orig_h).min(1.0);
     let target_w = (orig_w * scale).max(1.0) as u32;
     let target_h = (orig_h * scale).max(1.0) as u32;
-    let resized = image::imageops::resize(&img, target_w, target_h, FilterType::Lanczos3);
+
+    let resize_started = Instant::now();
+    let resized = image::imageops::resize(&img, target_w, target_h, FilterType::Triangle);
 
     let mut rgb_data = Vec::with_capacity((resized.width() * resized.height() * 3) as usize);
     for y in 0..resized.height() {
@@ -475,8 +499,11 @@ pub async fn fetch_cover_matrix(
             rgb_data.push(pixel[2]);
         }
     }
+    let resize_elapsed = resize_started.elapsed();
 
-    let theme_color = calculate_cover_theme_color(&img);
+    let theme_started = Instant::now();
+    let theme_color = calculate_cover_theme_color(&resized);
+    let theme_elapsed = theme_started.elapsed();
     let result = ImageMatrix {
         width: resized.width(),
         height: resized.height(),
@@ -486,8 +513,19 @@ pub async fn fetch_cover_matrix(
 
     {
         let mut cache = cache_mutex.lock().await;
-        cache.insert(pic_url.to_string(), result.clone());
+        cache.insert(request_url, result.clone());
     }
+
+    println!(
+        "[DEBUG][cover-process] fetch={}ms decode={}ms resize={}ms theme={}ms input_bytes={} output={}x{}",
+        fetch_elapsed.as_millis(),
+        decode_elapsed.as_millis(),
+        resize_elapsed.as_millis(),
+        theme_elapsed.as_millis(),
+        img_bytes.len(),
+        result.width,
+        result.height
+    );
 
     Ok(result)
 }

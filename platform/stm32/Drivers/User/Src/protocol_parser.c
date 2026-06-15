@@ -64,7 +64,6 @@ typedef enum {
     STATE_PAYLOAD,
     STATE_CHECKSUM
 } ParserState;
-
 typedef struct {
     ParserState state;
     uint8_t type;
@@ -96,16 +95,16 @@ static uint32_t global_theme_bg = 0xFF000000;
 #define LYRIC_STAGE_COMPOSE_ADDR (LYRIC_STAGE_B_ADDR + LYRIC_STAGE_STRIDE_BYTES)
 #define LYRIC_LOCAL_ANIMATION_FRAMES 5
 #define LYRIC_LOCAL_SCROLL_DISTANCE 42
+#define COVER_MAX_W 280
+#define COVER_MAX_H 400
+#define COVER_MAX_PIXELS (COVER_MAX_W * COVER_MAX_H)
+#define COVER_STAGE_BYTES (COVER_MAX_PIXELS * 2)
+#define COVER_STAGE_STRIDE_BYTES (((COVER_STAGE_BYTES + 31) / 32) * 32)
+#define COVER_NEXT_ADDR (LYRIC_STAGE_COMPOSE_ADDR + LYRIC_STAGE_STRIDE_BYTES)
 
 static uint8_t lyric_front_buffer_index = 0;
 static uint8_t lyric_front_buffer_valid = 0;
 
-
-/**
- * @brief 绘制全彩封面图像
- * @param data 图像像素及宽高数�?
- * @param length 数据总长�?
- */
 void Draw_Cover(uint8_t *data, uint32_t length) {
     uint16_t width = data[0] | (data[1] << 8);
     uint16_t height = data[2] | (data[3] << 8);
@@ -144,6 +143,86 @@ void Draw_Cover(uint8_t *data, uint32_t length) {
         }
     }
 }
+typedef struct {
+    uint16_t width;
+    uint16_t height;
+    int16_t start_x;
+    int16_t start_y;
+    uint32_t theme;
+    uint8_t valid;
+} CoverState;
+
+static CoverState cover_next = {0};
+
+static uint16_t *Cover_NextBuffer(void) {
+    return (uint16_t *)COVER_NEXT_ADDR;
+}
+
+static void Cover_ClearOverlayForNewTheme(void) {
+    LCD_SetLayer(1);
+    LCD_SetColor(0x00000000);
+    LCD_FillRect(LYRIC_BITMAP_X, LYRIC_BITMAP_Y, LYRIC_BITMAP_W, LYRIC_BITMAP_H);
+    LCD_FillRect(300, 380, 500, 60);
+    lyric_front_buffer_valid = 0;
+}
+
+static void Cover_FillBackgroundExceptCover(const CoverState *state) {
+    int16_t x0 = state->start_x;
+    int16_t y0 = state->start_y;
+    int16_t x1 = state->start_x + (int16_t)state->width;
+    int16_t y1 = state->start_y + (int16_t)state->height;
+
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > LCD_Width) x1 = LCD_Width;
+    if (y1 > LCD_Height) y1 = LCD_Height;
+
+    LCD_SetColor(state->theme);
+    if (y0 > 0) {
+        LCD_FillRect(0, 0, LCD_Width, y0);
+    }
+    if (y1 < LCD_Height) {
+        LCD_FillRect(0, y1, LCD_Width, LCD_Height - y1);
+    }
+    if (x0 > 0 && y1 > y0) {
+        LCD_FillRect(0, y0, x0, y1 - y0);
+    }
+    if (x1 < LCD_Width && y1 > y0) {
+        LCD_FillRect(x1, y0, LCD_Width - x1, y1 - y0);
+    }
+}
+
+static void Cover_DrawStaged(void) {
+    if (!cover_next.valid || cover_next.width == 0 || cover_next.height == 0) {
+        return;
+    }
+
+    uint16_t *next = Cover_NextBuffer();
+    global_theme_bg = cover_next.theme;
+
+    LCD_SetLayer(0);
+    Cover_FillBackgroundExceptCover(&cover_next);
+
+    for (uint16_t y = 0; y < cover_next.height; y++) {
+        for (uint16_t x = 0; x < cover_next.width; x++) {
+            int16_t draw_x = cover_next.start_x + (int16_t)x;
+            int16_t draw_y = cover_next.start_y + (int16_t)y;
+            if (draw_x >= 20 && draw_x < 300 && draw_y >= 50 && draw_y < 450) {
+                uint16_t pixel = next[(uint32_t)y * cover_next.width + x];
+#if ColorMode_0 == LTDC_PIXEL_FORMAT_RGB565
+                LCD_DrawPoint(draw_x, draw_y, pixel);
+#else
+                uint8_t r = (uint8_t)(((pixel >> 11) & 0x1F) << 3);
+                uint8_t g = (uint8_t)(((pixel >> 5) & 0x3F) << 2);
+                uint8_t b = (uint8_t)((pixel & 0x1F) << 3);
+                Safe_DrawPoint_Layer0(draw_x, draw_y, r, g, b);
+#endif
+            }
+        }
+    }
+
+    Cover_ClearOverlayForNewTheme();
+}
 
 static void Draw_CoverRgb565Block(uint8_t *data, uint32_t length) {
     if (length < 11) {
@@ -159,7 +238,7 @@ static void Draw_CoverRgb565Block(uint8_t *data, uint32_t length) {
     uint16_t chunk_h = data[9] | (data[10] << 8);
     uint32_t data_idx = 11;
 
-    if (width == 0 || height == 0 || width > 280 || height > 400 || chunk_h == 0) {
+    if (width == 0 || height == 0 || width > COVER_MAX_W || height > COVER_MAX_H || chunk_h == 0) {
         return;
     }
     if ((uint32_t)chunk_y + chunk_h > height) {
@@ -169,46 +248,33 @@ static void Draw_CoverRgb565Block(uint8_t *data, uint32_t length) {
         return;
     }
 
-    int16_t start_x = 20 + (300 - 20 - (int16_t)width) / 2;
-    if (start_x < 20) start_x = 20;
-    int16_t start_y = (480 - (int16_t)height) / 2 - 30;
-    if (start_y < 0) start_y = 0;
-
     if (chunk_y == 0) {
-        global_theme_bg = (0xFF << 24) | (theme_r << 16) | (theme_g << 8) | theme_b;
-
-        LCD_SetLayer(1);
-        LCD_SetColor(0x00000000);
-        LCD_FillRect(LYRIC_BITMAP_X, LYRIC_BITMAP_Y, LYRIC_BITMAP_W, LYRIC_BITMAP_H);
-        LCD_FillRect(300, 380, 500, 60);
-        lyric_front_buffer_valid = 0;
-
-        LCD_SetLayer(0);
-        LCD_SetColor(global_theme_bg);
-        LCD_FillRect(0, 0, 800, 480);
-    } else {
-        LCD_SetLayer(0);
+        cover_next.width = width;
+        cover_next.height = height;
+        cover_next.start_x = 20 + (300 - 20 - (int16_t)width) / 2;
+        if (cover_next.start_x < 20) cover_next.start_x = 20;
+        cover_next.start_y = (480 - (int16_t)height) / 2 - 30;
+        if (cover_next.start_y < 0) cover_next.start_y = 0;
+        cover_next.theme = (0xFF << 24) | (theme_r << 16) | (theme_g << 8) | theme_b;
+        cover_next.valid = 1;
     }
 
+    if (!cover_next.valid || cover_next.width != width || cover_next.height != height) {
+        return;
+    }
+
+    uint16_t *next = Cover_NextBuffer();
     for (uint16_t row = 0; row < chunk_h; row++) {
         uint16_t y = chunk_y + row;
         for (uint16_t x = 0; x < width; x++) {
             uint16_t pixel = data[data_idx] | (data[data_idx + 1] << 8);
             data_idx += 2;
-
-            int16_t draw_x = start_x + x;
-            int16_t draw_y = start_y + y;
-            if (draw_x >= 20 && draw_x < 300 && draw_y >= 50 && draw_y < 450) {
-#if ColorMode_0 == LTDC_PIXEL_FORMAT_RGB565
-                LCD_DrawPoint(draw_x, draw_y, pixel);
-#else
-                uint8_t r = (uint8_t)(((pixel >> 11) & 0x1F) << 3);
-                uint8_t g = (uint8_t)(((pixel >> 5) & 0x3F) << 2);
-                uint8_t b = (uint8_t)((pixel & 0x1F) << 3);
-                Safe_DrawPoint_Layer0(draw_x, draw_y, r, g, b);
-#endif
-            }
+            next[(uint32_t)y * width + x] = pixel;
         }
+    }
+
+    if ((uint32_t)chunk_y + chunk_h >= height) {
+        Cover_DrawStaged();
     }
 }
 /**
