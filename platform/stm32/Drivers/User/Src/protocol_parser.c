@@ -161,9 +161,7 @@ static uint16_t *Cover_NextBuffer(void) {
 static void Cover_ClearOverlayForNewTheme(void) {
     LCD_SetLayer(1);
     LCD_SetColor(0x00000000);
-    LCD_FillRect(LYRIC_BITMAP_X, LYRIC_BITMAP_Y, LYRIC_BITMAP_W, LYRIC_BITMAP_H);
     LCD_FillRect(300, 380, 500, 60);
-    lyric_front_buffer_valid = 0;
 }
 
 static void Cover_FillBackgroundExceptCover(const CoverState *state) {
@@ -443,10 +441,10 @@ static void Lyric_BlitShifted(uint16_t *dst, const uint16_t *src, int16_t y_offs
     }
 }
 
-static void Lyric_CommitNextBuffer(uint8_t next_index) {
+static void Lyric_CommitNextBuffer(uint8_t next_index, uint8_t animate) {
     uint16_t *next = Lyric_Buffer(next_index);
 
-    if (!lyric_front_buffer_valid) {
+    if (!animate || !lyric_front_buffer_valid) {
         Lyric_CopyBufferToVisible(next);
         lyric_front_buffer_index = next_index;
         lyric_front_buffer_valid = 1;
@@ -471,7 +469,7 @@ static void Lyric_CommitNextBuffer(uint8_t next_index) {
     lyric_front_buffer_valid = 1;
 }
 
-static void Draw_LyricBitmap(uint8_t *data, uint32_t length) {
+static void Draw_LyricBitmap(uint8_t *data, uint32_t length, uint8_t animate) {
     if (length < 9) {
         return;
     }
@@ -525,7 +523,7 @@ static void Draw_LyricBitmap(uint8_t *data, uint32_t length) {
         }
     }
 
-    Lyric_CommitNextBuffer(next_index);
+    Lyric_CommitNextBuffer(next_index, animate);
 }
 void Protocol_Init(void) {
     parser.state = STATE_HEAD1;
@@ -649,7 +647,9 @@ void Protocol_ParseByte(uint8_t byte) {
                     LCD_FillRect(100, 455, current_width, 4);
                     LCD_FillCircle(100 + current_width, 457, 7);
                 } else if (parser.type == 0x06) {
-                    Draw_LyricBitmap(parser.payload_buf, parser.len);
+                    Draw_LyricBitmap(parser.payload_buf, parser.len, 1);
+                } else if (parser.type == 0x08) {
+                    Draw_LyricBitmap(parser.payload_buf, parser.len, 0);
                 } else if (parser.type == 0x07) {
                     Draw_CoverRgb565Block(parser.payload_buf, parser.len);
                 }

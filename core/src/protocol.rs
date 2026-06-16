@@ -5,6 +5,7 @@
 use crate::graphics::{ImageMatrix, LyricBitmap, TextLayer, TextMatrix};
 
 /// 定义与下位机通信的不同逻辑功能类型
+#[derive(Clone, Copy)]
 pub enum PacketType {
     CoverRgb888 = 0x01,
     TextGrayscale = 0x02,
@@ -13,6 +14,7 @@ pub enum PacketType {
     Progress = 0x05,
     LyricBitmap = 0x06,
     CoverRgb565Block = 0x07,
+    LyricBitmapRefresh = 0x08,
 }
 
 /// 构建底层原始包裹结构并计算校验和
@@ -83,7 +85,7 @@ pub fn encode_rle_grayscale(pixels: &[u8]) -> Vec<u8> {
     encoded
 }
 
-pub fn pack_lyric_bitmap(bitmap: &LyricBitmap) -> Vec<u8> {
+fn pack_lyric_bitmap_as(bitmap: &LyricBitmap, pkt_type: PacketType) -> Vec<u8> {
     let rle = encode_rle_grayscale(&bitmap.pixels);
     let use_rle = rle.len() < bitmap.pixels.len();
     let data = if use_rle {
@@ -99,10 +101,18 @@ pub fn pack_lyric_bitmap(bitmap: &LyricBitmap) -> Vec<u8> {
     payload.extend_from_slice(&bitmap.height.to_le_bytes());
     payload.push(if use_rle { 1 } else { 0 });
     payload.extend_from_slice(data);
-    build_packet(PacketType::LyricBitmap, &payload)
+    build_packet(pkt_type, &payload)
 }
 
-pub fn pack_lyric_bitmap_cropped(bitmap: &LyricBitmap) -> Vec<u8> {
+pub fn pack_lyric_bitmap(bitmap: &LyricBitmap) -> Vec<u8> {
+    pack_lyric_bitmap_as(bitmap, PacketType::LyricBitmap)
+}
+
+pub fn pack_lyric_bitmap_refresh(bitmap: &LyricBitmap) -> Vec<u8> {
+    pack_lyric_bitmap_as(bitmap, PacketType::LyricBitmapRefresh)
+}
+
+fn pack_lyric_bitmap_cropped_as(bitmap: &LyricBitmap, pkt_type: PacketType) -> Vec<u8> {
     let width = bitmap.width as usize;
     let height = bitmap.height as usize;
     let mut min_x = width;
@@ -123,13 +133,16 @@ pub fn pack_lyric_bitmap_cropped(bitmap: &LyricBitmap) -> Vec<u8> {
     }
 
     if min_x == width {
-        return pack_lyric_bitmap(&LyricBitmap {
-            x: bitmap.x,
-            y: bitmap.y,
-            width: 1,
-            height: 1,
-            pixels: vec![0],
-        });
+        return pack_lyric_bitmap_as(
+            &LyricBitmap {
+                x: bitmap.x,
+                y: bitmap.y,
+                width: 1,
+                height: 1,
+                pixels: vec![0],
+            },
+            pkt_type,
+        );
     }
 
     let crop_w = max_x - min_x + 1;
@@ -148,13 +161,21 @@ pub fn pack_lyric_bitmap_cropped(bitmap: &LyricBitmap) -> Vec<u8> {
         pixels,
     };
 
-    let full_packet = pack_lyric_bitmap(bitmap);
-    let cropped_packet = pack_lyric_bitmap(&cropped);
+    let full_packet = pack_lyric_bitmap_as(bitmap, pkt_type);
+    let cropped_packet = pack_lyric_bitmap_as(&cropped, pkt_type);
     if cropped_packet.len() < full_packet.len() {
         cropped_packet
     } else {
         full_packet
     }
+}
+
+pub fn pack_lyric_bitmap_cropped(bitmap: &LyricBitmap) -> Vec<u8> {
+    pack_lyric_bitmap_cropped_as(bitmap, PacketType::LyricBitmap)
+}
+
+pub fn pack_lyric_bitmap_refresh_cropped(bitmap: &LyricBitmap) -> Vec<u8> {
+    pack_lyric_bitmap_cropped_as(bitmap, PacketType::LyricBitmapRefresh)
 }
 
 /// 封装现成的 RGB888 图像矩阵
@@ -245,7 +266,10 @@ mod tests {
     fn unpack_lyric_bitmap_pixels(packet: &[u8]) -> Vec<u8> {
         assert_eq!(packet[0], 0xAA);
         assert_eq!(packet[1], 0x55);
-        assert_eq!(packet[2], PacketType::LyricBitmap as u8);
+        assert!(
+            packet[2] == PacketType::LyricBitmap as u8
+                || packet[2] == PacketType::LyricBitmapRefresh as u8
+        );
         let len = u32::from_le_bytes([packet[3], packet[4], packet[5], packet[6]]) as usize;
         let payload = &packet[7..7 + len];
         let encoding = payload[8];
@@ -289,6 +313,22 @@ mod tests {
 
         let packet = pack_lyric_bitmap(&bitmap);
 
+        assert_eq!(unpack_lyric_bitmap_pixels(&packet), bitmap.pixels);
+    }
+
+    #[test]
+    fn lyric_bitmap_refresh_packet_uses_refresh_type() {
+        let bitmap = LyricBitmap {
+            x: 360,
+            y: 115,
+            width: 2,
+            height: 2,
+            pixels: vec![1, 2, 3, 4],
+        };
+
+        let packet = pack_lyric_bitmap_refresh_cropped(&bitmap);
+
+        assert_eq!(packet[2], PacketType::LyricBitmapRefresh as u8);
         assert_eq!(unpack_lyric_bitmap_pixels(&packet), bitmap.pixels);
     }
 

@@ -149,6 +149,54 @@ async fn send_cover_blocks_then_meta(
     }
 }
 
+fn parse_lyric_message(lyric: &str) -> (Vec<String>, Vec<f64>) {
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(lyric.trim()) {
+        if let Some(arr) = parsed.as_array() {
+            let lines = arr
+                .iter()
+                .map(|v| v.as_str().unwrap_or("").to_string())
+                .collect();
+            return (lines, vec![0.0; 11]);
+        }
+
+        if let (Some(l_arr), Some(t_arr)) = (parsed["lines"].as_array(), parsed["times"].as_array())
+        {
+            let lines = l_arr
+                .iter()
+                .map(|v| v.as_str().unwrap_or("").to_string())
+                .collect();
+            let times = t_arr.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect();
+            return (lines, times);
+        }
+    }
+
+    let mut lines = Vec::with_capacity(11);
+    for _ in 0..5 {
+        lines.push(String::new());
+    }
+    lines.push(lyric.trim().to_string());
+    while lines.len() < 11 {
+        lines.push(String::new());
+    }
+    (lines, vec![0.0; 11])
+}
+
+fn pack_lyric_message(lyric: &str, refresh_only: bool) -> Option<(Vec<u8>, Vec<f64>)> {
+    let (lines, times) = parse_lyric_message(lyric);
+    if lines.iter().all(|line| line.trim().is_empty()) {
+        return None;
+    }
+
+    let bitmap = graphics::generate_lyric_bitmap(&lines);
+    let packet = if refresh_only {
+        protocol::pack_lyric_bitmap_refresh_cropped(&bitmap)
+    } else {
+        protocol::pack_lyric_bitmap_cropped(&bitmap)
+    };
+
+    Some((packet, times))
+}
+
 /// 后台守护进程核心入口，初始化 WebSocket 服务与 SMTC 监听，建立多线程异步通信循环
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -455,49 +503,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(async move {
         while let Ok(lyric) = serial_lyric_rx.recv().await {
-            let (lines, times): (Vec<String>, Vec<f64>) =
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(lyric.trim()) {
-                    if let Some(arr) = parsed.as_array() {
-                        let l = arr
-                            .iter()
-                            .map(|v| v.as_str().unwrap_or("").to_string())
-                            .collect();
-                        (l, vec![0.0; 11])
-                    } else if let (Some(l_arr), Some(t_arr)) =
-                        (parsed["lines"].as_array(), parsed["times"].as_array())
-                    {
-                        let l = l_arr
-                            .iter()
-                            .map(|v| v.as_str().unwrap_or("").to_string())
-                            .collect();
-                        let t = t_arr.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect();
-                        (l, t)
-                    } else {
-                        let mut f = Vec::with_capacity(11);
-                        for _ in 0..5 {
-                            f.push(String::new());
-                        }
-                        f.push(lyric.trim().to_string());
-                        while f.len() < 11 {
-                            f.push(String::new());
-                        }
-                        (f, vec![0.0; 11])
-                    }
-                } else {
-                    let mut f = Vec::with_capacity(11);
-                    for _ in 0..5 {
-                        f.push(String::new());
-                    }
-                    f.push(lyric.trim().to_string());
-                    while f.len() < 11 {
-                        f.push(String::new());
-                    }
-                    (f, vec![0.0; 11])
-                };
-
-            if lines.iter().all(|l| l.trim().is_empty()) {
+            let Some((packet, times)) = pack_lyric_message(&lyric, false) else {
                 continue;
-            }
+            };
 
             {
                 let mut guard = current_lyric_times_for_rx.write().await;
@@ -508,8 +516,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            let bitmap = graphics::generate_lyric_bitmap(&lines);
-            let packet = protocol::pack_lyric_bitmap_cropped(&bitmap);
             let _ = serial_tx_for_lyric.send(packet);
         }
     });
@@ -567,7 +573,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let serial_tx_for_cover = serial_tx.clone();
     let mut song_rx_for_cover = song_tx.subscribe();
-    let resend_lyric_tx = lyric_tx.clone();
     let resend_play_state_tx = play_state_tx.clone();
 
     let last_play_state_store = Arc::new(RwLock::new(None::<bool>));
@@ -602,7 +607,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 }
 
                 let serial_tx_clone = serial_tx_for_cover.clone();
-                let resend_lyric_tx_clone = resend_lyric_tx.clone();
                 let resend_play_state_tx_clone = resend_play_state_tx.clone();
                 let last_lyric_store_clone = last_lyric_store.clone();
                 let last_play_state_store_clone = last_play_state_store.clone();
@@ -720,7 +724,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
                                 let last_lyric = last_lyric_store_clone.read().await.clone();
                                 if !last_lyric.is_empty() {
-                                    let _ = resend_lyric_tx_clone.send(last_lyric);
+                                    if let Some((packet, _)) = pack_lyric_message(&last_lyric, true)
+                                    {
+                                        let _ = serial_tx_clone.send(packet);
+                                    }
                                 }
 
                                 let last_play_state =
@@ -932,6 +939,18 @@ mod tests {
 
         assert_eq!(rx.recv().await, Some(cover_a));
         assert_eq!(rx.recv().await, Some(cover_b));
-        assert_eq!(rx.recv().await.unwrap()[2], protocol::PacketType::ClearRect as u8);
+        assert_eq!(
+            rx.recv().await.unwrap()[2],
+            protocol::PacketType::ClearRect as u8
+        );
+    }
+
+    #[test]
+    fn lyric_refresh_message_uses_refresh_packet_type() {
+        let normal = pack_lyric_message("hello", false).unwrap().0;
+        let refresh = pack_lyric_message("hello", true).unwrap().0;
+
+        assert_eq!(normal[2], protocol::PacketType::LyricBitmap as u8);
+        assert_eq!(refresh[2], protocol::PacketType::LyricBitmapRefresh as u8);
     }
 }
