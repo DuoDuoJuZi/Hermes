@@ -31,6 +31,14 @@ mod api_process;
 mod graphics;
 mod protocol;
 
+const META_BASE_X: i16 = 360;
+const META_MIN_ANIM_DX: i16 = -14;
+const META_CLEAR_PAD_LEFT: u16 = 6;
+const META_CLEAR_X: u16 = (META_BASE_X + META_MIN_ANIM_DX) as u16 - META_CLEAR_PAD_LEFT;
+const META_CLEAR_Y: u16 = 0;
+const META_CLEAR_W: u16 = 800 - META_CLEAR_X;
+const META_CLEAR_H: u16 = 115;
+
 /// 维护全局异步共享的应用程序状态
 #[derive(Clone)]
 struct AppState {
@@ -86,14 +94,14 @@ async fn send_meta_layers_animated(
     previous_layers: Option<Vec<graphics::TextLayer>>,
     next_layers: &[graphics::TextLayer],
 ) {
-    const META_X: u16 = 360;
-    const META_Y: u16 = 0;
-    const META_W: u16 = 440;
-    const META_H: u16 = 115;
-
     if let Some(previous) = previous_layers {
         for (dx, dy, alpha) in [(0, 0, 220), (-6, -4, 150), (-14, -10, 70)] {
-            let _ = serial_tx.send(protocol::pack_clear_rect(META_X, META_Y, META_W, META_H));
+            let _ = serial_tx.send(protocol::pack_clear_rect(
+                META_CLEAR_X,
+                META_CLEAR_Y,
+                META_CLEAR_W,
+                META_CLEAR_H,
+            ));
             for layer in &previous {
                 let frame_layer = transformed_text_layer(layer, dx, dy, alpha);
                 let _ = serial_tx.send(protocol::pack_text_layer(&frame_layer));
@@ -103,12 +111,41 @@ async fn send_meta_layers_animated(
     }
 
     for (dx, dy, alpha) in [(6, 4, 150), (0, 0, 255)] {
-        let _ = serial_tx.send(protocol::pack_clear_rect(META_X, META_Y, META_W, META_H));
+        let _ = serial_tx.send(protocol::pack_clear_rect(
+            META_CLEAR_X,
+            META_CLEAR_Y,
+            META_CLEAR_W,
+            META_CLEAR_H,
+        ));
         for layer in next_layers {
             let frame_layer = transformed_text_layer(layer, dx, dy, alpha);
             let _ = serial_tx.send(protocol::pack_text_layer(&frame_layer));
         }
         tokio::time::sleep(Duration::from_millis(24)).await;
+    }
+}
+
+async fn send_cover_blocks_then_meta(
+    serial_tx: &tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    cover_blocks: Vec<Vec<u8>>,
+    previous_meta: Option<Vec<graphics::TextLayer>>,
+    meta_layers: Option<Vec<graphics::TextLayer>>,
+) -> Option<Vec<graphics::TextLayer>> {
+    for block in cover_blocks {
+        let _ = serial_tx.send(block);
+    }
+
+    if let Some(meta_layers) = meta_layers {
+        send_meta_layers_animated(serial_tx, previous_meta, &meta_layers).await;
+        Some(meta_layers)
+    } else {
+        let _ = serial_tx.send(protocol::pack_clear_rect(
+            META_CLEAR_X,
+            META_CLEAR_Y,
+            META_CLEAR_W,
+            META_CLEAR_H,
+        ));
+        None
     }
 }
 
@@ -529,7 +566,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     });
 
     let serial_tx_for_cover = serial_tx.clone();
-    let serial_high_tx_for_cover = serial_high_tx.clone();
     let mut song_rx_for_cover = song_tx.subscribe();
     let resend_lyric_tx = lyric_tx.clone();
     let resend_play_state_tx = play_state_tx.clone();
@@ -566,7 +602,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 }
 
                 let serial_tx_clone = serial_tx_for_cover.clone();
-                let serial_high_tx_clone = serial_high_tx_for_cover.clone();
                 let resend_lyric_tx_clone = resend_lyric_tx.clone();
                 let resend_play_state_tx_clone = resend_play_state_tx.clone();
                 let last_lyric_store_clone = last_lyric_store.clone();
@@ -670,26 +705,17 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                     }
                                 };
 
-                                if let Some(first_block) = cover_blocks.first() {
-                                    let _ = serial_high_tx_clone.send(first_block.clone());
-                                }
-
-                                if let Ok(Some(meta_layers)) = meta_layers_res {
-                                    let previous_meta = last_meta_layers_clone.read().await.clone();
-                                    send_meta_layers_animated(
-                                        &serial_high_tx_clone,
-                                        previous_meta,
-                                        &meta_layers,
-                                    )
-                                    .await;
+                                let previous_meta = last_meta_layers_clone.read().await.clone();
+                                let meta_layers = meta_layers_res.ok().flatten();
+                                if let Some(meta_layers) = send_cover_blocks_then_meta(
+                                    &serial_tx_clone,
+                                    cover_blocks,
+                                    previous_meta,
+                                    meta_layers,
+                                )
+                                .await
+                                {
                                     *last_meta_layers_clone.write().await = Some(meta_layers);
-                                } else {
-                                    let _ = serial_high_tx_clone
-                                        .send(protocol::pack_clear_rect(360, 0, 440, 115));
-                                }
-
-                                for block in cover_blocks.into_iter().skip(1) {
-                                    let _ = serial_tx_clone.send(block);
                                 }
 
                                 let last_lyric = last_lyric_store_clone.read().await.clone();
@@ -864,5 +890,48 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn meta_clear_rect_covers_left_up_animation_bounds() {
+        let leftmost_animated_x = (META_BASE_X + META_MIN_ANIM_DX) as u16;
+
+        assert!(META_CLEAR_X <= leftmost_animated_x);
+        assert_eq!(META_CLEAR_X + META_CLEAR_W, 800);
+        assert_eq!(META_CLEAR_Y, 0);
+        assert_eq!(META_CLEAR_H, 115);
+    }
+
+    #[tokio::test]
+    async fn meta_packets_are_queued_after_cover_blocks() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let cover_a = vec![0x07, 0x01];
+        let cover_b = vec![0x07, 0x02];
+        let meta_layer = graphics::TextLayer {
+            x: META_BASE_X,
+            y: 10,
+            width: 1,
+            height: 1,
+            is_active: 0,
+            pixel_data: vec![255],
+            line_index: 0,
+        };
+
+        send_cover_blocks_then_meta(
+            &tx,
+            vec![cover_a.clone(), cover_b.clone()],
+            None,
+            Some(vec![meta_layer]),
+        )
+        .await;
+
+        assert_eq!(rx.recv().await, Some(cover_a));
+        assert_eq!(rx.recv().await, Some(cover_b));
+        assert_eq!(rx.recv().await.unwrap()[2], protocol::PacketType::ClearRect as u8);
     }
 }
