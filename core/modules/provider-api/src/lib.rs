@@ -15,6 +15,13 @@ use windows::Media::Control::{
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+const BACKTRACK_DEBOUNCE_MS: u64 = 3200;
+const TIMELINE_SETTLE_MS: u128 = 120;
+
+enum SmtcSongEvent {
+    SongId(String),
+}
+
 #[derive(Deserialize, Debug)]
 struct LrcResponse {
     lrc: Option<LrcData>,
@@ -129,7 +136,7 @@ async fn is_current_song(current_ncm_id: &Arc<RwLock<Option<String>>>, expected_
 fn lyric_position_needs_backtrack_debounce(last_position: Option<f64>, position: f64, current_idx: usize) -> bool {
     current_idx != usize::MAX
         && position <= 3.0
-        && last_position.map(|last| position + 5.0 < last).unwrap_or(false)
+        && last_position.map(|last| position < last).unwrap_or(false)
 }
 
 async fn fetch_and_parse_lrc(client: &reqwest::Client, song_id: &str) -> std::result::Result<Vec<LyricLine>, Box<dyn std::error::Error>> {
@@ -224,7 +231,7 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
 
         if let Ok(timeline) = session.GetTimelineProperties() {
             if let Ok(pos) = timeline.Position() {
-                if pos.Duration < 10_000_000 || wait_start.elapsed().as_millis() > 600 {
+                if pos.Duration < 10_000_000 || wait_start.elapsed().as_millis() > TIMELINE_SETTLE_MS {
                     break;
                 }
             }
@@ -268,7 +275,7 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
         if position >= 0.0 {
             if lyric_position_needs_backtrack_debounce(last_position, position, current_idx) {
                 let started = backtrack_started.get_or_insert_with(tokio::time::Instant::now);
-                if started.elapsed() < Duration::from_millis(1200) {
+                if started.elapsed() < Duration::from_millis(BACKTRACK_DEBOUNCE_MS) {
                     sleep(Duration::from_millis(20)).await;
                     continue;
                 }
@@ -299,7 +306,7 @@ async fn sync_lyrics_to_channel(lyrics: Vec<LyricLine>, session: GlobalSystemMed
     }
 }
 
-fn create_media_props_handler(tx: tokio::sync::mpsc::UnboundedSender<String>, handle: tokio::runtime::Handle) -> TypedEventHandler<GlobalSystemMediaTransportControlsSession, MediaPropertiesChangedEventArgs> {
+fn create_media_props_handler(tx: tokio::sync::mpsc::UnboundedSender<SmtcSongEvent>, handle: tokio::runtime::Handle) -> TypedEventHandler<GlobalSystemMediaTransportControlsSession, MediaPropertiesChangedEventArgs> {
     TypedEventHandler::<GlobalSystemMediaTransportControlsSession, MediaPropertiesChangedEventArgs>::new(move |session_ref, _| {
         let tx_inner = tx.clone();
         if let Some(session) = session_ref.clone() {
@@ -312,7 +319,7 @@ fn create_media_props_handler(tx: tokio::sync::mpsc::UnboundedSender<String>, ha
                             for genre in genres {
                                 let genre_str: String = genre.to_string();
                                 if genre_str.starts_with("NCM-") {
-                                    let _ = tx_inner.send(genre_str.replace("NCM-", ""));
+                                    let _ = tx_inner.send(SmtcSongEvent::SongId(genre_str.replace("NCM-", "")));
                                     break;
                                 }
                             }
@@ -339,7 +346,7 @@ fn create_playback_info_handler(play_state_tx: tokio::sync::broadcast::Sender<bo
 }
 
 pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<String>, song_tx: tokio::sync::broadcast::Sender<String>, progress_tx: tokio::sync::broadcast::Sender<(u16, u64, u64)>, play_state_tx: tokio::sync::broadcast::Sender<bool>) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SmtcSongEvent>();
 
     println!("正在连接 SMTC");
 
@@ -357,7 +364,7 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
                     for genre in genres {
                         let genre_str: String = genre.to_string();
                         if genre_str.starts_with("NCM-") {
-                            let _ = tx_first.send(genre_str.replace("NCM-", ""));
+                            let _ = tx_first.send(SmtcSongEvent::SongId(genre_str.replace("NCM-", "")));
                             break;
                         }
                     }
@@ -385,7 +392,7 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
                                  for genre in genres {
                                      let genre_str: String = genre.to_string();
                                      if genre_str.starts_with("NCM-") {
-                                         let _ = tx_inner.send(genre_str.replace("NCM-", ""));
+                                         let _ = tx_inner.send(SmtcSongEvent::SongId(genre_str.replace("NCM-", "")));
                                          break;
                                      }
                                  }
@@ -478,34 +485,44 @@ pub async fn listen_smtc_and_sync(lyric_tx: tokio::sync::broadcast::Sender<Strin
     });
 
     let mut last_id = String::new();
-    while let Some(song_id) = rx.recv().await {
-        if song_id != last_id {
-            println!("提取到网易云歌曲 ID: {}", song_id);
-            last_id = song_id.clone();
-            {
-                let mut writer = current_ncm_id.write().await;
-                *writer = Some(song_id.clone());
-            }
-            if let Some(task) = current_task.take() {
-                task.abort();
-            }
-            let _ = song_tx.send(song_id.clone());
-            
-            let empty_lyric = "[\"\",\"\",\"\",\"\",\"\",\"加载中...\",\"\",\"\",\"\",\"\",\"\"]";
-            let _ = lyric_tx.send(empty_lyric.to_string());
+    while let Some(event) = rx.recv().await {
+        match event {
+            SmtcSongEvent::SongId(song_id) => {
+                if song_id == last_id {
+                    continue;
+                }
 
-            if let Ok(session) = manager.GetCurrentSession() {
-                match fetch_and_parse_lrc(&client, &song_id).await {
-                    Ok(lyrics) => {
-                        println!("成功获取歌词，开始同步");
-                        let tx_clone = lyric_tx.clone();
-                        let task_song_id = song_id.clone();
-                        let current_ncm_id_clone = current_ncm_id.clone();
-                        current_task = Some(tokio::spawn(async move {
-                            sync_lyrics_to_channel(lyrics, session, tx_clone, task_song_id, current_ncm_id_clone).await;
-                        }));
-                    },
-                    Err(e) => println!("获取歌词失败: {}", e)
+                println!("提取到网易云歌曲 ID: {}", song_id);
+                last_id = song_id.clone();
+                {
+                    let mut writer = current_ncm_id.write().await;
+                    *writer = Some(song_id.clone());
+                }
+                if let Some(task) = current_task.take() {
+                    task.abort();
+                }
+                let _ = song_tx.send(song_id.clone());
+
+                if let Ok(session) = manager.GetCurrentSession() {
+                    match fetch_and_parse_lrc(&client, &song_id).await {
+                        Ok(lyrics) => {
+                            println!("成功获取歌词，开始同步");
+                            let tx_clone = lyric_tx.clone();
+                            let task_song_id = song_id.clone();
+                            let current_ncm_id_clone = current_ncm_id.clone();
+                            current_task = Some(tokio::spawn(async move {
+                                sync_lyrics_to_channel(
+                                    lyrics,
+                                    session,
+                                    tx_clone,
+                                    task_song_id,
+                                    current_ncm_id_clone,
+                                )
+                                .await;
+                            }));
+                        }
+                        Err(e) => println!("获取歌词失败: {}", e),
+                    }
                 }
             }
         }
@@ -556,8 +573,12 @@ mod tests {
 
     #[test]
     fn lyric_backtrack_debounce_only_catches_reset_to_start_after_playback() {
+        assert!(BACKTRACK_DEBOUNCE_MS >= 3000);
+        assert!(TIMELINE_SETTLE_MS <= 150);
         assert!(lyric_position_needs_backtrack_debounce(Some(90.0), 0.2, 4));
+        assert!(lyric_position_needs_backtrack_debounce(Some(2.0), 0.2, 4));
         assert!(!lyric_position_needs_backtrack_debounce(Some(90.0), 30.0, 4));
+        assert!(!lyric_position_needs_backtrack_debounce(Some(0.2), 2.0, 4));
         assert!(!lyric_position_needs_backtrack_debounce(None, 0.2, usize::MAX));
     }
 }

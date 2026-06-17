@@ -15,6 +15,7 @@ pub enum PacketType {
     LyricBitmap = 0x06,
     CoverRgb565Block = 0x07,
     LyricBitmapRefresh = 0x08,
+    MetaBitmap = 0x09,
 }
 
 /// 构建底层原始包裹结构并计算校验和
@@ -176,6 +177,10 @@ pub fn pack_lyric_bitmap_cropped(bitmap: &LyricBitmap) -> Vec<u8> {
 
 pub fn pack_lyric_bitmap_refresh_cropped(bitmap: &LyricBitmap) -> Vec<u8> {
     pack_lyric_bitmap_cropped_as(bitmap, PacketType::LyricBitmapRefresh)
+}
+
+pub fn pack_meta_bitmap_cropped(bitmap: &LyricBitmap) -> Vec<u8> {
+    pack_lyric_bitmap_cropped_as(bitmap, PacketType::MetaBitmap)
 }
 
 /// 封装现成的 RGB888 图像矩阵

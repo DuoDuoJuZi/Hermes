@@ -87,10 +87,15 @@ static uint32_t global_theme_bg = 0xFF000000;
 #define LYRIC_BITMAP_H 305
 #define LYRIC_PIXEL_ACTIVE_FLAG 0x80
 #define LYRIC_PIXEL_LEVEL_MASK 0x7F
+#define META_BITMAP_X 320
+#define META_BITMAP_Y 0
+#define META_BITMAP_W 480
+#define META_BITMAP_H 115
 #define LYRIC_STAGE_PIXELS (LYRIC_BITMAP_W * LYRIC_BITMAP_H)
 #define LYRIC_STAGE_BYTES (LYRIC_STAGE_PIXELS * BytesPerPixel_1)
 #define LYRIC_STAGE_STRIDE_BYTES (((LYRIC_STAGE_BYTES + 31) / 32) * 32)
-#define LYRIC_STAGE_A_ADDR (LCD_MemoryAdd + LCD_MemoryAdd_OFFSET + LCD_Width * LCD_Height * BytesPerPixel_1)
+#define UI_SCRATCH_BASE_ADDR (LCD_MemoryAdd + 0x00200000)
+#define LYRIC_STAGE_A_ADDR UI_SCRATCH_BASE_ADDR
 #define LYRIC_STAGE_B_ADDR (LYRIC_STAGE_A_ADDR + LYRIC_STAGE_STRIDE_BYTES)
 #define LYRIC_STAGE_COMPOSE_ADDR (LYRIC_STAGE_B_ADDR + LYRIC_STAGE_STRIDE_BYTES)
 #define LYRIC_LOCAL_ANIMATION_FRAMES 5
@@ -101,6 +106,21 @@ static uint32_t global_theme_bg = 0xFF000000;
 #define COVER_STAGE_BYTES (COVER_MAX_PIXELS * 2)
 #define COVER_STAGE_STRIDE_BYTES (((COVER_STAGE_BYTES + 31) / 32) * 32)
 #define COVER_NEXT_ADDR (LYRIC_STAGE_COMPOSE_ADDR + LYRIC_STAGE_STRIDE_BYTES)
+#define COVER_CURRENT_ADDR (COVER_NEXT_ADDR + COVER_STAGE_STRIDE_BYTES)
+#define COVER_FRAME_ADDR (COVER_CURRENT_ADDR + COVER_STAGE_STRIDE_BYTES)
+#define COVER_FLIP_FRAME_COUNT 12
+#define COVER_FLIP_FRAME_INTERVAL_MS 36
+#define COVER_FLIP_AREA_X 20
+#define COVER_FLIP_AREA_Y 50
+#define COVER_FLIP_AREA_W 280
+#define COVER_FLIP_AREA_H 400
+#define COVER_FRAME_PIXELS (COVER_FLIP_AREA_W * COVER_FLIP_AREA_H)
+#define COVER_FRAME_BYTES (COVER_FRAME_PIXELS * BytesPerPixel_0)
+#define COVER_FRAME_STRIDE_BYTES (((COVER_FRAME_BYTES + 31) / 32) * 32)
+#define META_STAGE_PIXELS (META_BITMAP_W * META_BITMAP_H)
+#define META_STAGE_BYTES (META_STAGE_PIXELS * BytesPerPixel_1)
+#define META_STAGE_STRIDE_BYTES (((META_STAGE_BYTES + 31) / 32) * 32)
+#define META_NEXT_ADDR (COVER_FRAME_ADDR + COVER_FRAME_STRIDE_BYTES)
 
 static uint8_t lyric_front_buffer_index = 0;
 static uint8_t lyric_front_buffer_valid = 0;
@@ -153,9 +173,26 @@ typedef struct {
 } CoverState;
 
 static CoverState cover_next = {0};
+static CoverState cover_current = {0};
+
+typedef struct {
+    uint8_t active;
+    uint8_t frame;
+    uint32_t start_tick;
+} CoverFlipAnimation;
+
+static CoverFlipAnimation cover_flip = {0};
 
 static uint16_t *Cover_NextBuffer(void) {
     return (uint16_t *)COVER_NEXT_ADDR;
+}
+
+static uint16_t *Cover_CurrentBuffer(void) {
+    return (uint16_t *)COVER_CURRENT_ADDR;
+}
+
+static uint16_t *Cover_FrameBuffer(void) {
+    return (uint16_t *)COVER_FRAME_ADDR;
 }
 
 static void Cover_ClearOverlayForNewTheme(void) {
@@ -189,7 +226,150 @@ static void Cover_FillBackgroundExceptCover(const CoverState *state) {
         LCD_FillRect(x1, y0, LCD_Width - x1, y1 - y0);
     }
 }
+static uint16_t Cover_PackThemeRgb565(uint32_t theme) {
+    uint8_t r = (theme >> 16) & 0xFF;
+    uint8_t g = (theme >> 8) & 0xFF;
+    uint8_t b = theme & 0xFF;
+    return (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+}
 
+static uint16_t Cover_ShadePixel(uint16_t pixel, uint8_t shade) {
+    if (shade >= 255) {
+        return pixel;
+    }
+
+    uint8_t r = (uint8_t)(((pixel >> 11) & 0x1F) << 3);
+    uint8_t g = (uint8_t)(((pixel >> 5) & 0x3F) << 2);
+    uint8_t b = (uint8_t)((pixel & 0x1F) << 3);
+    r = (uint8_t)((uint16_t)r * shade / 255);
+    g = (uint8_t)((uint16_t)g * shade / 255);
+    b = (uint8_t)((uint16_t)b * shade / 255);
+    return (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+}
+
+static void Cover_ComposeFrame(const CoverState *state, const uint16_t *src, uint16_t draw_w, uint8_t shade, uint32_t theme) {
+    uint16_t *dst = Cover_FrameBuffer();
+    uint16_t bg = Cover_PackThemeRgb565(theme);
+
+    for (uint32_t i = 0; i < COVER_FRAME_PIXELS; i++) {
+        dst[i] = bg;
+    }
+
+    if (!state->valid || state->width == 0 || state->height == 0 || draw_w == 0) {
+        return;
+    }
+    if (draw_w > state->width) {
+        draw_w = state->width;
+    }
+
+    int16_t center_x = state->start_x + (int16_t)state->width / 2;
+    int16_t draw_x0 = center_x - (int16_t)draw_w / 2;
+
+    for (uint16_t y = 0; y < state->height; y++) {
+        int16_t draw_y = state->start_y + (int16_t)y;
+        if (draw_y < COVER_FLIP_AREA_Y || draw_y >= COVER_FLIP_AREA_Y + COVER_FLIP_AREA_H) {
+            continue;
+        }
+
+        uint16_t local_y = (uint16_t)(draw_y - COVER_FLIP_AREA_Y);
+        for (uint16_t x = 0; x < draw_w; x++) {
+            int16_t draw_x = draw_x0 + (int16_t)x;
+            if (draw_x < COVER_FLIP_AREA_X || draw_x >= COVER_FLIP_AREA_X + COVER_FLIP_AREA_W) {
+                continue;
+            }
+
+            uint16_t src_x = (uint16_t)(((uint32_t)x * state->width) / draw_w);
+            if (src_x >= state->width) {
+                src_x = state->width - 1;
+            }
+
+            uint16_t pixel = src[(uint32_t)y * state->width + src_x];
+            uint16_t local_x = (uint16_t)(draw_x - COVER_FLIP_AREA_X);
+            dst[(uint32_t)local_y * COVER_FLIP_AREA_W + local_x] = Cover_ShadePixel(pixel, shade);
+        }
+    }
+}
+
+static void Cover_CopyFrameToVisible(void) {
+    uint16_t *buffer = Cover_FrameBuffer();
+    SCB_CleanDCache_by_Addr((uint32_t *)buffer, COVER_FRAME_STRIDE_BYTES);
+
+    while (READ_BIT(LTDC->CDSR, LTDC_CDSR_VDES) == 0U) {}
+    while (READ_BIT(LTDC->CDSR, LTDC_CDSR_VDES) != 0U) {}
+
+    DMA2D->CR &= ~DMA2D_CR_START;
+    DMA2D->CR = DMA2D_M2M;
+    DMA2D->FGPFCCR = ColorMode_0;
+    DMA2D->OPFCCR = ColorMode_0;
+    DMA2D->FGMAR = (uint32_t)buffer;
+    DMA2D->OMAR = LCD_MemoryAdd + BytesPerPixel_0 * (LCD_Width * COVER_FLIP_AREA_Y + COVER_FLIP_AREA_X);
+    DMA2D->FGOR = 0;
+    DMA2D->OOR = LCD_Width - COVER_FLIP_AREA_W;
+    DMA2D->NLR = (COVER_FLIP_AREA_W << 16) | COVER_FLIP_AREA_H;
+    DMA2D->CR |= DMA2D_CR_START;
+    while (DMA2D->CR & DMA2D_CR_START) {}
+}
+
+static void Cover_RenderToVisible(const CoverState *state, const uint16_t *src, uint16_t draw_w, uint8_t shade, uint32_t theme) {
+    Cover_ComposeFrame(state, src, draw_w, shade, theme);
+    Cover_CopyFrameToVisible();
+}
+
+static void Cover_CopyToCurrent(const CoverState *state, const uint16_t *src) {
+    uint16_t *dst = Cover_CurrentBuffer();
+    uint32_t count = (uint32_t)state->width * state->height;
+    for (uint32_t i = 0; i < count; i++) {
+        dst[i] = src[i];
+    }
+    cover_current = *state;
+    cover_current.valid = 1;
+}
+
+static const uint8_t cover_flip_use_next[COVER_FLIP_FRAME_COUNT] = {0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1};
+static const uint8_t cover_flip_width_curve[COVER_FLIP_FRAME_COUNT] = {255, 225, 185, 135, 80, 28, 28, 75, 130, 185, 225, 255};
+static const uint8_t cover_flip_shade[COVER_FLIP_FRAME_COUNT] = {255, 235, 205, 165, 120, 80, 80, 130, 175, 215, 240, 255};
+
+static void Cover_StartFlipAnimation(void) {
+    cover_flip.active = 1;
+    cover_flip.frame = 0;
+    cover_flip.start_tick = HAL_GetTick();
+}
+
+static void Cover_DrawFlipFrame(void) {
+    if (!cover_flip.active || cover_flip.frame >= COVER_FLIP_FRAME_COUNT) {
+        return;
+    }
+
+    uint8_t frame = cover_flip.frame;
+    const CoverState *state = cover_flip_use_next[frame] ? &cover_next : &cover_current;
+    const uint16_t *buffer = cover_flip_use_next[frame] ? Cover_NextBuffer() : Cover_CurrentBuffer();
+    if (!state->valid || state->width == 0 || state->height == 0) {
+        cover_flip.active = 0;
+        return;
+    }
+
+    uint16_t draw_w = (uint16_t)(((uint32_t)state->width * cover_flip_width_curve[frame] + 127) / 255);
+    if (draw_w < 2) draw_w = 2;
+
+    Cover_RenderToVisible(state, buffer, draw_w, cover_flip_shade[frame], cover_next.theme);
+
+    cover_flip.frame++;
+    if (cover_flip.frame >= COVER_FLIP_FRAME_COUNT) {
+        cover_flip.active = 0;
+        Cover_RenderToVisible(&cover_next, Cover_NextBuffer(), cover_next.width, 255, cover_next.theme);
+        Cover_CopyToCurrent(&cover_next, Cover_NextBuffer());
+        Cover_ClearOverlayForNewTheme();
+    }
+}
+
+void Protocol_Tick(void) {
+    if (cover_flip.active) {
+        uint32_t frame_due_ms = (uint32_t)cover_flip.frame * COVER_FLIP_FRAME_INTERVAL_MS;
+        if ((uint32_t)(HAL_GetTick() - cover_flip.start_tick) >= frame_due_ms) {
+            Cover_DrawFlipFrame();
+        }
+    }
+}
 static void Cover_DrawStaged(void) {
     if (!cover_next.valid || cover_next.width == 0 || cover_next.height == 0) {
         return;
@@ -201,24 +381,14 @@ static void Cover_DrawStaged(void) {
     LCD_SetLayer(0);
     Cover_FillBackgroundExceptCover(&cover_next);
 
-    for (uint16_t y = 0; y < cover_next.height; y++) {
-        for (uint16_t x = 0; x < cover_next.width; x++) {
-            int16_t draw_x = cover_next.start_x + (int16_t)x;
-            int16_t draw_y = cover_next.start_y + (int16_t)y;
-            if (draw_x >= 20 && draw_x < 300 && draw_y >= 50 && draw_y < 450) {
-                uint16_t pixel = next[(uint32_t)y * cover_next.width + x];
-#if ColorMode_0 == LTDC_PIXEL_FORMAT_RGB565
-                LCD_DrawPoint(draw_x, draw_y, pixel);
-#else
-                uint8_t r = (uint8_t)(((pixel >> 11) & 0x1F) << 3);
-                uint8_t g = (uint8_t)(((pixel >> 5) & 0x3F) << 2);
-                uint8_t b = (uint8_t)((pixel & 0x1F) << 3);
-                Safe_DrawPoint_Layer0(draw_x, draw_y, r, g, b);
-#endif
-            }
-        }
+    if (cover_current.valid && cover_current.width > 0 && cover_current.height > 0) {
+        Cover_StartFlipAnimation();
+        return;
     }
 
+    cover_flip.active = 0;
+    Cover_RenderToVisible(&cover_next, next, cover_next.width, 255, cover_next.theme);
+    Cover_CopyToCurrent(&cover_next, next);
     Cover_ClearOverlayForNewTheme();
 }
 
@@ -247,6 +417,11 @@ static void Draw_CoverRgb565Block(uint8_t *data, uint32_t length) {
     }
 
     if (chunk_y == 0) {
+        if (cover_flip.active && cover_current.valid) {
+            cover_flip.active = 0;
+            Cover_RenderToVisible(&cover_current, Cover_CurrentBuffer(), cover_current.width, 255, cover_current.theme);
+        }
+        cover_flip.active = 0;
         cover_next.width = width;
         cover_next.height = height;
         cover_next.start_x = 20 + (300 - 20 - (int16_t)width) / 2;
@@ -469,6 +644,136 @@ static void Lyric_CommitNextBuffer(uint8_t next_index, uint8_t animate) {
     lyric_front_buffer_valid = 1;
 }
 
+static uint16_t *Meta_NextBuffer(void) {
+    return (uint16_t *)META_NEXT_ADDR;
+}
+
+static void Meta_ClearBuffer(uint16_t *buffer) {
+    for (uint32_t i = 0; i < META_STAGE_PIXELS; i++) {
+        buffer[i] = 0;
+    }
+}
+
+static uint16_t Meta_ConvertPixel(uint8_t encoded_pixel) {
+    if (encoded_pixel == 0) {
+        return 0;
+    }
+
+    uint8_t is_active = (encoded_pixel & LYRIC_PIXEL_ACTIVE_FLAG) != 0;
+    uint8_t level = encoded_pixel & LYRIC_PIXEL_LEVEL_MASK;
+    if (level == 0) {
+        return 0;
+    }
+
+    uint32_t base_color = is_active ? LCD_WHITE : LIGHT_GREY;
+    uint8_t base_r = (base_color >> 16) & 0xFF;
+    uint8_t base_g = (base_color >> 8) & 0xFF;
+    uint8_t base_b = base_color & 0xFF;
+    uint8_t alpha = (uint8_t)(((uint16_t)level * 255 + 63) / 127);
+
+#if ColorMode_1 == LTDC_PIXEL_FORMAT_ARGB4444
+    return (uint16_t)Pack_Layer1_Color(base_r, base_g, base_b, alpha);
+#else
+    uint8_t bg_r = (global_theme_bg >> 16) & 0xFF;
+    uint8_t bg_g = (global_theme_bg >> 8) & 0xFF;
+    uint8_t bg_b = global_theme_bg & 0xFF;
+    uint8_t r = (base_r * alpha + bg_r * (255 - alpha)) / 255;
+    uint8_t g = (base_g * alpha + bg_g * (255 - alpha)) / 255;
+    uint8_t b = (base_b * alpha + bg_b * (255 - alpha)) / 255;
+    return (uint16_t)Pack_Layer1_Color(r, g, b, 255);
+#endif
+}
+
+static void Meta_DrawPixelToBuffer(uint16_t *buffer, uint16_t dst_x, uint16_t dst_y, uint8_t encoded_pixel) {
+    if (dst_x < META_BITMAP_X || dst_x >= META_BITMAP_X + META_BITMAP_W ||
+        dst_y < META_BITMAP_Y || dst_y >= META_BITMAP_Y + META_BITMAP_H) {
+        return;
+    }
+
+    uint16_t pixel = Meta_ConvertPixel(encoded_pixel);
+    if (pixel == 0) {
+        return;
+    }
+
+    uint16_t local_x = dst_x - META_BITMAP_X;
+    uint16_t local_y = dst_y - META_BITMAP_Y;
+    buffer[(uint32_t)local_y * META_BITMAP_W + local_x] = pixel;
+}
+
+static void Meta_CopyBufferToVisible(uint16_t *buffer) {
+    SCB_CleanDCache_by_Addr((uint32_t *)buffer, META_STAGE_STRIDE_BYTES);
+
+    while (READ_BIT(LTDC->CDSR, LTDC_CDSR_VDES) == 0U) {}
+    while (READ_BIT(LTDC->CDSR, LTDC_CDSR_VDES) != 0U) {}
+
+    DMA2D->CR &= ~DMA2D_CR_START;
+    DMA2D->CR = DMA2D_M2M;
+    DMA2D->FGPFCCR = ColorMode_1;
+    DMA2D->OPFCCR = ColorMode_1;
+    DMA2D->FGMAR = (uint32_t)buffer;
+    DMA2D->OMAR = LCD_MemoryAdd + LCD_MemoryAdd_OFFSET + BytesPerPixel_1 * (LCD_Width * META_BITMAP_Y + META_BITMAP_X);
+    DMA2D->FGOR = 0;
+    DMA2D->OOR = LCD_Width - META_BITMAP_W;
+    DMA2D->NLR = (META_BITMAP_W << 16) | META_BITMAP_H;
+    DMA2D->CR |= DMA2D_CR_START;
+    while (DMA2D->CR & DMA2D_CR_START) {}
+}
+
+static void Draw_MetaBitmap(uint8_t *data, uint32_t length) {
+    if (length < 9) {
+        return;
+    }
+
+    uint16_t x = data[0] | (data[1] << 8);
+    uint16_t y = data[2] | (data[3] << 8);
+    uint16_t w = data[4] | (data[5] << 8);
+    uint16_t h = data[6] | (data[7] << 8);
+    uint8_t encoding = data[8];
+
+    if (w == 0 || h == 0 || w > META_BITMAP_W || h > META_BITMAP_H) {
+        return;
+    }
+    if (x < META_BITMAP_X || y < META_BITMAP_Y ||
+        (uint32_t)x + w > META_BITMAP_X + META_BITMAP_W ||
+        (uint32_t)y + h > META_BITMAP_Y + META_BITMAP_H) {
+        return;
+    }
+    if (encoding != 0 && encoding != 1) {
+        return;
+    }
+    if (encoding == 0 && length < 9 + (uint32_t)w * h) {
+        return;
+    }
+
+    uint16_t *next = Meta_NextBuffer();
+    Meta_ClearBuffer(next);
+
+    if (encoding == 0) {
+        uint32_t idx = 9;
+        for (uint16_t row = 0; row < h; row++) {
+            for (uint16_t col = 0; col < w; col++) {
+                Meta_DrawPixelToBuffer(next, x + col, y + row, data[idx++]);
+            }
+        }
+    } else {
+        uint32_t idx = 9;
+        uint32_t pixel_pos = 0;
+        uint32_t total = (uint32_t)w * h;
+        while (idx + 2 < length && pixel_pos < total) {
+            uint16_t run_len = data[idx] | (data[idx + 1] << 8);
+            uint8_t value = data[idx + 2];
+            idx += 3;
+
+            for (uint16_t i = 0; i < run_len && pixel_pos < total; i++, pixel_pos++) {
+                uint16_t row = pixel_pos / w;
+                uint16_t col = pixel_pos % w;
+                Meta_DrawPixelToBuffer(next, x + col, y + row, value);
+            }
+        }
+    }
+
+    Meta_CopyBufferToVisible(next);
+}
 static void Draw_LyricBitmap(uint8_t *data, uint32_t length, uint8_t animate) {
     if (length < 9) {
         return;
@@ -528,6 +833,7 @@ static void Draw_LyricBitmap(uint8_t *data, uint32_t length, uint8_t animate) {
 void Protocol_Init(void) {
     parser.state = STATE_HEAD1;
     parser.payload_buf = rx_payload_buffer;
+    cover_flip.active = 0;
     
     LCD_SetLayer(1);
     LCD_SetColor(0x00000000);
@@ -650,6 +956,8 @@ void Protocol_ParseByte(uint8_t byte) {
                     Draw_LyricBitmap(parser.payload_buf, parser.len, 1);
                 } else if (parser.type == 0x08) {
                     Draw_LyricBitmap(parser.payload_buf, parser.len, 0);
+                } else if (parser.type == 0x09) {
+                    Draw_MetaBitmap(parser.payload_buf, parser.len);
                 } else if (parser.type == 0x07) {
                     Draw_CoverRgb565Block(parser.payload_buf, parser.len);
                 }

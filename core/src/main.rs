@@ -12,6 +12,7 @@ use axum::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
@@ -27,17 +28,22 @@ enum HwEvent {
     LyricClick(u16),
 }
 
+enum SerialPacket {
+    Data(Vec<u8>),
+    Tagged { generation: u64, packet: Vec<u8> },
+}
+
 mod api_process;
 mod graphics;
 mod protocol;
 
+#[cfg(test)]
 const META_BASE_X: i16 = 360;
-const META_MIN_ANIM_DX: i16 = -14;
-const META_CLEAR_PAD_LEFT: u16 = 6;
-const META_CLEAR_X: u16 = (META_BASE_X + META_MIN_ANIM_DX) as u16 - META_CLEAR_PAD_LEFT;
+const META_CLEAR_X: u16 = 320;
 const META_CLEAR_Y: u16 = 0;
-const META_CLEAR_W: u16 = 800 - META_CLEAR_X;
+const META_CLEAR_W: u16 = 480;
 const META_CLEAR_H: u16 = 115;
+const LYRIC_BACKTRACK_SUPPRESS_MS: u64 = 3200;
 
 /// 维护全局异步共享的应用程序状态
 #[derive(Clone)]
@@ -72,80 +78,92 @@ fn parse_cover_block_info(packet: &[u8]) -> Option<CoverBlockInfo> {
     })
 }
 
-fn transformed_text_layer(
-    layer: &graphics::TextLayer,
-    dx: i16,
-    dy: i16,
-    alpha: u16,
-) -> graphics::TextLayer {
-    let mut transformed = layer.clone();
-    transformed.x = transformed.x.saturating_add(dx);
-    transformed.y = transformed.y.saturating_add(dy);
-    if alpha < 255 {
-        for pixel in &mut transformed.pixel_data {
-            *pixel = ((*pixel as u16 * alpha + 127) / 255) as u8;
-        }
+fn encode_meta_pixel(alpha: u8, is_active: bool) -> u8 {
+    if alpha == 0 {
+        return 0;
     }
-    transformed
+
+    let level = ((alpha as u16 * 127 + 127) / 255).max(1).min(127) as u8;
+    if is_active { 0x80 | level } else { level }
 }
 
-async fn send_meta_layers_animated(
-    serial_tx: &tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
-    previous_layers: Option<Vec<graphics::TextLayer>>,
+fn put_meta_pixel(canvas: &mut [u8], idx: usize, pixel: u8) {
+    if pixel == 0 {
+        return;
+    }
+
+    let current = canvas[idx];
+    if current == 0 || (pixel & 0x7F) >= (current & 0x7F) {
+        canvas[idx] = pixel;
+    }
+}
+
+fn compose_meta_bitmap(layers: &[graphics::TextLayer]) -> graphics::LyricBitmap {
+    let width = META_CLEAR_W as usize;
+    let height = META_CLEAR_H as usize;
+    let mut pixels = vec![0u8; width * height];
+    for layer in layers {
+        if layer.width == 0 || layer.height == 0 {
+            continue;
+        }
+
+        let draw_w = layer.width as usize;
+        let draw_x0 = layer.x - META_CLEAR_X as i16;
+        let is_active = layer.is_active == 1;
+
+        for y in 0..layer.height as usize {
+            let dst_y = layer.y + y as i16;
+            if dst_y < META_CLEAR_Y as i16 || dst_y >= (META_CLEAR_Y + META_CLEAR_H) as i16 {
+                continue;
+            }
+
+            for dx in 0..draw_w {
+                let dst_x = draw_x0 + dx as i16;
+                if dst_x < 0 || dst_x >= META_CLEAR_W as i16 {
+                    continue;
+                }
+
+                let src_x = ((dx as u32 * layer.width as u32) / draw_w as u32)
+                    .min(layer.width as u32 - 1) as usize;
+                let src_idx = y * layer.width as usize + src_x;
+                let alpha = layer.pixel_data[src_idx];
+                if alpha <= 10 {
+                    continue;
+                }
+
+                let dst_idx = dst_y as usize * width + dst_x as usize;
+                put_meta_pixel(&mut pixels, dst_idx, encode_meta_pixel(alpha, is_active));
+            }
+        }
+    }
+
+    graphics::LyricBitmap {
+        x: META_CLEAR_X,
+        y: META_CLEAR_Y,
+        width: META_CLEAR_W,
+        height: META_CLEAR_H,
+        pixels,
+    }
+}
+
+async fn send_meta_layers_direct(
+    serial_tx: &tokio::sync::mpsc::UnboundedSender<SerialPacket>,
+    generation: u64,
     next_layers: &[graphics::TextLayer],
 ) {
-    if let Some(previous) = previous_layers {
-        for (dx, dy, alpha) in [(0, 0, 220), (-6, -4, 150), (-14, -10, 70)] {
-            let _ = serial_tx.send(protocol::pack_clear_rect(
-                META_CLEAR_X,
-                META_CLEAR_Y,
-                META_CLEAR_W,
-                META_CLEAR_H,
-            ));
-            for layer in &previous {
-                let frame_layer = transformed_text_layer(layer, dx, dy, alpha);
-                let _ = serial_tx.send(protocol::pack_text_layer(&frame_layer));
-            }
-            tokio::time::sleep(Duration::from_millis(24)).await;
-        }
-    }
-
-    for (dx, dy, alpha) in [(6, 4, 150), (0, 0, 255)] {
-        let _ = serial_tx.send(protocol::pack_clear_rect(
-            META_CLEAR_X,
-            META_CLEAR_Y,
-            META_CLEAR_W,
-            META_CLEAR_H,
-        ));
-        for layer in next_layers {
-            let frame_layer = transformed_text_layer(layer, dx, dy, alpha);
-            let _ = serial_tx.send(protocol::pack_text_layer(&frame_layer));
-        }
-        tokio::time::sleep(Duration::from_millis(24)).await;
-    }
+    let bitmap = compose_meta_bitmap(next_layers);
+    let _ = serial_tx.send(SerialPacket::Tagged {
+        generation,
+        packet: protocol::pack_meta_bitmap_cropped(&bitmap),
+    });
 }
 
-async fn send_cover_blocks_then_meta(
-    serial_tx: &tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+async fn send_cover_blocks(
+    serial_tx: &tokio::sync::mpsc::UnboundedSender<SerialPacket>,
     cover_blocks: Vec<Vec<u8>>,
-    previous_meta: Option<Vec<graphics::TextLayer>>,
-    meta_layers: Option<Vec<graphics::TextLayer>>,
-) -> Option<Vec<graphics::TextLayer>> {
+) {
     for block in cover_blocks {
-        let _ = serial_tx.send(block);
-    }
-
-    if let Some(meta_layers) = meta_layers {
-        send_meta_layers_animated(serial_tx, previous_meta, &meta_layers).await;
-        Some(meta_layers)
-    } else {
-        let _ = serial_tx.send(protocol::pack_clear_rect(
-            META_CLEAR_X,
-            META_CLEAR_Y,
-            META_CLEAR_W,
-            META_CLEAR_H,
-        ));
-        None
+        let _ = serial_tx.send(SerialPacket::Data(block));
     }
 }
 
@@ -223,9 +241,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let (serial_tx, mut serial_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (serial_tx, mut serial_rx) = tokio::sync::mpsc::unbounded_channel::<SerialPacket>();
     let (serial_high_tx, mut serial_high_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
     let (hw_event_tx, mut hw_event_rx) = tokio::sync::mpsc::unbounded_channel::<HwEvent>();
+    let serial_generation = Arc::new(AtomicU64::new(0));
+    let serial_generation_for_thread = serial_generation.clone();
 
     std::thread::spawn(move || {
         let port_name = "COM5";
@@ -259,10 +279,28 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         loop {
             let mut work_done = false;
 
-            let packet = serial_high_rx
-                .try_recv()
-                .ok()
-                .or_else(|| serial_rx.try_recv().ok());
+            let packet = if let Ok(packet) = serial_high_rx.try_recv() {
+                Some(packet)
+            } else {
+                let mut selected = None;
+                loop {
+                    match serial_rx.try_recv() {
+                        Ok(SerialPacket::Data(packet)) => {
+                            selected = Some(packet);
+                            break;
+                        }
+                        Ok(SerialPacket::Tagged { generation, packet }) => {
+                            if generation == serial_generation_for_thread.load(Ordering::SeqCst) {
+                                selected = Some(packet);
+                                break;
+                            }
+                            work_done = true;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                selected
+            };
 
             if let Some(packet) = packet {
                 println!(
@@ -500,12 +538,41 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let serial_tx_for_lyric = serial_tx.clone();
     let mut serial_lyric_rx = lyric_tx.subscribe();
     let current_lyric_times_for_rx = current_lyric_times.clone();
+    let serial_generation_for_lyric = serial_generation.clone();
+    let lyric_block_until = Arc::new(RwLock::new(
+        tokio::time::Instant::now() - Duration::from_secs(1),
+    ));
+    let lyric_block_until_for_rx = lyric_block_until.clone();
 
     tokio::spawn(async move {
+        let mut last_generation = serial_generation_for_lyric.load(Ordering::SeqCst);
+        let mut last_center_time: Option<f64> = None;
+
         while let Ok(lyric) = serial_lyric_rx.recv().await {
+            let now = tokio::time::Instant::now();
             let Some((packet, times)) = pack_lyric_message(&lyric, false) else {
                 continue;
             };
+
+            let generation = serial_generation_for_lyric.load(Ordering::SeqCst);
+            if generation != last_generation {
+                last_generation = generation;
+                last_center_time = None;
+                *lyric_block_until_for_rx.write().await = now - Duration::from_millis(1);
+            }
+
+            if now < *lyric_block_until_for_rx.read().await {
+                continue;
+            }
+
+            let center_time = times.get(5).copied();
+            if let (Some(last), Some(center)) = (last_center_time, center_time) {
+                if center <= 3.0 && center + 5.0 < last {
+                    *lyric_block_until_for_rx.write().await =
+                        now + Duration::from_millis(LYRIC_BACKTRACK_SUPPRESS_MS);
+                    continue;
+                }
+            }
 
             {
                 let mut guard = current_lyric_times_for_rx.write().await;
@@ -515,8 +582,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            last_center_time = center_time;
 
-            let _ = serial_tx_for_lyric.send(packet);
+            let _ = serial_tx_for_lyric.send(SerialPacket::Tagged { generation, packet });
         }
     });
 
@@ -573,6 +641,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let serial_tx_for_cover = serial_tx.clone();
     let mut song_rx_for_cover = song_tx.subscribe();
+    let serial_generation_for_cover = serial_generation.clone();
     let resend_play_state_tx = play_state_tx.clone();
 
     let last_play_state_store = Arc::new(RwLock::new(None::<bool>));
@@ -587,9 +656,13 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let last_lyric_store = Arc::new(RwLock::new(String::new()));
     let last_lyric_store_for_update = last_lyric_store.clone();
+    let lyric_block_until_for_store = lyric_block_until.clone();
     let mut lyric_rx_for_store = lyric_tx.subscribe();
     tokio::spawn(async move {
         while let Ok(lyric) = lyric_rx_for_store.recv().await {
+            if tokio::time::Instant::now() < *lyric_block_until_for_store.read().await {
+                continue;
+            }
             *last_lyric_store_for_update.write().await = lyric;
         }
     });
@@ -600,15 +673,23 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             let mut current_task: Option<tokio::task::JoinHandle<()>> = None;
             while let Ok(song_id) = song_rx_for_cover.recv().await {
+                let song_generation =
+                    serial_generation_for_cover.fetch_add(1, Ordering::SeqCst) + 1;
                 *last_lyric_store.write().await = String::new();
+                if let Some((packet, _)) = pack_lyric_message("加载中", true) {
+                    let _ = serial_tx_for_cover.send(SerialPacket::Tagged {
+                        generation: song_generation,
+                        packet,
+                    });
+                }
 
                 if let Some(task) = current_task.take() {
                     task.abort();
                 }
 
                 let serial_tx_clone = serial_tx_for_cover.clone();
+                let serial_generation_for_task = serial_generation_for_cover.clone();
                 let resend_play_state_tx_clone = resend_play_state_tx.clone();
-                let last_lyric_store_clone = last_lyric_store.clone();
                 let last_play_state_store_clone = last_play_state_store.clone();
                 let last_meta_layers_clone = last_meta_layers.clone();
 
@@ -655,26 +736,46 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
                                 let artist_album = format!("{} - {}", artist, album);
 
-                                let (cover_res, meta_layers_res) = tokio::join!(
-                                    tokio::spawn({
-                                        let pic_string = pic_string.clone();
-                                        async move {
-                                            let started = Instant::now();
-                                            let result =
-                                                graphics::fetch_cover_matrix(&pic_string).await;
-                                            (result, started.elapsed())
-                                        }
-                                    }),
-                                    tokio::task::spawn_blocking({
-                                        let title = title.clone();
-                                        let artist_album = artist_album.clone();
-                                        move || {
-                                            graphics::generate_meta_layers(&title, &artist_album)
-                                        }
-                                    })
-                                );
+                                let cover_task = tokio::spawn({
+                                    let pic_string = pic_string.clone();
+                                    async move {
+                                        let started = Instant::now();
+                                        let result =
+                                            graphics::fetch_cover_matrix(&pic_string).await;
+                                        (result, started.elapsed())
+                                    }
+                                });
 
-                                let cover_blocks = match cover_res {
+                                let meta_layers = tokio::task::spawn_blocking({
+                                    let title = title.clone();
+                                    let artist_album = artist_album.clone();
+                                    move || graphics::generate_meta_layers(&title, &artist_album)
+                                })
+                                .await
+                                .ok()
+                                .flatten();
+
+                                if serial_generation_for_task.load(Ordering::SeqCst)
+                                    != song_generation
+                                {
+                                    return;
+                                }
+                                if let Some(meta_layers) = meta_layers {
+                                    send_meta_layers_direct(
+                                        &serial_tx_clone,
+                                        song_generation,
+                                        &meta_layers,
+                                    )
+                                    .await;
+                                    if serial_generation_for_task.load(Ordering::SeqCst)
+                                        != song_generation
+                                    {
+                                        return;
+                                    }
+                                    *last_meta_layers_clone.write().await = Some(meta_layers);
+                                }
+
+                                let cover_blocks = match cover_task.await {
                                     Ok((Ok(matrix), process_elapsed)) => {
                                         graphics::print_cover_to_console(&matrix);
                                         let pack_started = Instant::now();
@@ -709,27 +810,18 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                     }
                                 };
 
-                                let previous_meta = last_meta_layers_clone.read().await.clone();
-                                let meta_layers = meta_layers_res.ok().flatten();
-                                if let Some(meta_layers) = send_cover_blocks_then_meta(
-                                    &serial_tx_clone,
-                                    cover_blocks,
-                                    previous_meta,
-                                    meta_layers,
-                                )
-                                .await
+                                if serial_generation_for_task.load(Ordering::SeqCst)
+                                    != song_generation
                                 {
-                                    *last_meta_layers_clone.write().await = Some(meta_layers);
+                                    return;
                                 }
+                                send_cover_blocks(&serial_tx_clone, cover_blocks).await;
 
-                                let last_lyric = last_lyric_store_clone.read().await.clone();
-                                if !last_lyric.is_empty() {
-                                    if let Some((packet, _)) = pack_lyric_message(&last_lyric, true)
-                                    {
-                                        let _ = serial_tx_clone.send(packet);
-                                    }
+                                if serial_generation_for_task.load(Ordering::SeqCst)
+                                    != song_generation
+                                {
+                                    return;
                                 }
-
                                 let last_play_state =
                                     last_play_state_store_clone.read().await.clone();
                                 if let Some(is_playing) = last_play_state {
@@ -906,17 +998,32 @@ mod tests {
 
     #[test]
     fn meta_clear_rect_covers_left_up_animation_bounds() {
-        let leftmost_animated_x = (META_BASE_X + META_MIN_ANIM_DX) as u16;
-
-        assert!(META_CLEAR_X <= leftmost_animated_x);
+        assert!(META_CLEAR_X <= META_BASE_X as u16);
         assert_eq!(META_CLEAR_X + META_CLEAR_W, 800);
         assert_eq!(META_CLEAR_Y, 0);
         assert_eq!(META_CLEAR_H, 115);
     }
 
+    fn bitmap_packet_bounds(packet: &[u8]) -> (u16, u16, u16, u16) {
+        assert_eq!(packet[0], 0xAA);
+        assert_eq!(packet[1], 0x55);
+        assert_eq!(packet[2], protocol::PacketType::MetaBitmap as u8);
+        (
+            u16::from_le_bytes([packet[7], packet[8]]),
+            u16::from_le_bytes([packet[9], packet[10]]),
+            u16::from_le_bytes([packet[11], packet[12]]),
+            u16::from_le_bytes([packet[13], packet[14]]),
+        )
+    }
+
+    #[test]
+    fn lyric_backtrack_suppression_covers_delayed_song_switch() {
+        assert!(LYRIC_BACKTRACK_SUPPRESS_MS >= 3000);
+    }
+
     #[tokio::test]
-    async fn meta_packets_are_queued_after_cover_blocks() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    async fn meta_packet_can_be_queued_before_cover_blocks() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SerialPacket>();
         let cover_a = vec![0x07, 0x01];
         let cover_b = vec![0x07, 0x02];
         let meta_layer = graphics::TextLayer {
@@ -929,20 +1036,31 @@ mod tests {
             line_index: 0,
         };
 
-        send_cover_blocks_then_meta(
-            &tx,
-            vec![cover_a.clone(), cover_b.clone()],
-            None,
-            Some(vec![meta_layer]),
-        )
-        .await;
+        send_meta_layers_direct(&tx, 7, &[meta_layer]).await;
+        send_cover_blocks(&tx, vec![cover_a.clone(), cover_b.clone()]).await;
 
-        assert_eq!(rx.recv().await, Some(cover_a));
-        assert_eq!(rx.recv().await, Some(cover_b));
-        assert_eq!(
-            rx.recv().await.unwrap()[2],
-            protocol::PacketType::ClearRect as u8
-        );
+        match rx.recv().await {
+            Some(SerialPacket::Tagged { generation, packet }) => {
+                assert_eq!(generation, 7);
+                assert_eq!(packet[2], protocol::PacketType::MetaBitmap as u8);
+                let (x, y, w, h) = bitmap_packet_bounds(&packet);
+                assert!(x >= META_CLEAR_X);
+                assert!(y >= META_CLEAR_Y);
+                assert!(w <= META_CLEAR_W);
+                assert!(h <= META_CLEAR_H);
+                assert!((x as u32 + w as u32) <= (META_CLEAR_X + META_CLEAR_W) as u32);
+                assert!((y as u32 + h as u32) <= (META_CLEAR_Y + META_CLEAR_H) as u32);
+            }
+            _ => panic!("expected tagged metadata packet"),
+        }
+        match rx.recv().await {
+            Some(SerialPacket::Data(packet)) => assert_eq!(packet, cover_a),
+            _ => panic!("expected cover data packet"),
+        }
+        match rx.recv().await {
+            Some(SerialPacket::Data(packet)) => assert_eq!(packet, cover_b),
+            _ => panic!("expected cover data packet"),
+        }
     }
 
     #[test]

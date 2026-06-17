@@ -22,4 +22,6 @@ void Protocol_Init(void);
  */
 void Protocol_ParseByte(uint8_t byte);
 
+void Protocol_Tick(void);
+
 #endif
